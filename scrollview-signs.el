@@ -47,20 +47,15 @@
     (list isearch-string
           isearch-regexp)))
 
-(defun scrollview--lazy-highlight-active-p (&optional buffer)
-  "Return non-nil if BUFFER still has live isearch lazy highlight overlays."
-  (let ((buffer (or buffer (current-buffer))))
-    (cl-some (lambda (overlay)
-               (and (overlayp overlay)
-                    (eq (overlay-buffer overlay) buffer)))
-             isearch-lazy-highlight-overlays)))
-
 (defun scrollview--retained-isearch-source ()
   "Return retained isearch source as (PATTERN REGEXP)."
   (when (and (not (bound-and-true-p isearch-mode))
              (stringp scrollview--last-search-pattern)
              (not (string-empty-p scrollview--last-search-pattern))
-             (scrollview--lazy-highlight-active-p))
+             (cl-some (lambda (overlay)
+                        (and (overlayp overlay)
+                             (eq (overlay-buffer overlay) (current-buffer))))
+                      isearch-lazy-highlight-overlays))
     (list scrollview--last-search-pattern scrollview--last-search-regexp)))
 
 (defun scrollview--search-source ()
@@ -69,29 +64,21 @@
       (scrollview--active-isearch-source)
     (scrollview--retained-isearch-source)))
 
-(defun scrollview--set-isearch-source (pattern regexp)
-  "Store active isearch PATTERN and REGEXP, then refresh search signs."
-  (unless (and (equal scrollview--last-search-pattern pattern)
-               (eq scrollview--last-search-regexp regexp))
-    (setq scrollview--last-search-pattern pattern)
-    (setq scrollview--last-search-regexp regexp)
-    (scrollview--invalidate-buffer-sign-cache)
-    (scrollview--schedule-buffer-refresh)))
-
-(defun scrollview--clear-isearch-source ()
-  "Clear stored isearch state and refresh search signs."
-  (when scrollview--last-search-pattern
-    (setq scrollview--last-search-pattern nil)
-    (setq scrollview--last-search-regexp nil)
-    (scrollview--invalidate-buffer-sign-cache)
-    (scrollview--schedule-buffer-refresh)))
-
 (defun scrollview--after-isearch-update ()
   "Refresh search signs after the active isearch changes."
   (if-let ((source (scrollview--active-isearch-source)))
       (pcase-let ((`(,pattern ,regexp) source))
-        (scrollview--set-isearch-source pattern regexp))
-    (scrollview--clear-isearch-source)))
+        (unless (and (equal scrollview--last-search-pattern pattern)
+                     (eq scrollview--last-search-regexp regexp))
+          (setq scrollview--last-search-pattern pattern)
+          (setq scrollview--last-search-regexp regexp)
+          (scrollview--invalidate-buffer-sign-cache)
+          (scrollview--schedule-buffer-refresh)))
+    (when scrollview--last-search-pattern
+      (setq scrollview--last-search-pattern nil)
+      (setq scrollview--last-search-regexp nil)
+      (scrollview--invalidate-buffer-sign-cache)
+      (scrollview--schedule-buffer-refresh))))
 
 (defun scrollview--after-isearch-end ()
   "Refresh search signs after isearch exits.
@@ -443,125 +430,130 @@ literally with `search-forward'."
   "Return plist keyword for VARIANT."
   (intern (format ":%s" variant)))
 
-(defun scrollview--register-builtin-sign-group (group specs)
-  "Register built-in sign GROUP and its SPECS.
-Each element of SPECS is a plist passed to `scrollview-register-sign-spec'."
-  (scrollview-register-sign-group
-   group (scrollview--startup-sign-enabled-p group))
-  (dolist (spec specs)
-    (apply #'scrollview-register-sign-spec :group group spec)))
-
-(defun scrollview--diagnostic-sign-specs ()
-  "Return built-in diagnostic sign specs."
-  (list
-   (list :variant 'error
-         :priority 60
-         :bitmap 'scrollview-diagnostic-bitmap
-         :face 'scrollview-diagnostic-error-face
-         :collector (apply-partially
-                     #'scrollview--collect-diagnostic-lines 'error))
-   (list :variant 'warning
-         :priority 50
-         :bitmap 'scrollview-diagnostic-bitmap
-         :face 'scrollview-diagnostic-warning-face
-         :collector (apply-partially
-                     #'scrollview--collect-diagnostic-lines 'warning))
-   (list :variant 'info
-         :priority 40
-         :bitmap 'scrollview-diagnostic-bitmap
-         :face 'scrollview-diagnostic-info-face
-         :collector (apply-partially
-                     #'scrollview--collect-diagnostic-lines 'info))))
-
-(defun scrollview--conflict-sign-specs ()
-  "Return built-in conflict sign specs."
-  (list
-   (list :variant 'top
-         :priority 80
-         :bitmap 'scrollview-sign-dot-bitmap
-         :face 'scrollview-conflict-top-face
-         :collector (apply-partially
-                     #'scrollview--collect-conflict-lines 'top))
-   (list :variant 'middle
-         :priority 80
-         :bitmap 'scrollview-sign-dot-bitmap
-         :face 'scrollview-conflict-middle-face
-         :collector (apply-partially
-                     #'scrollview--collect-conflict-lines 'middle))
-   (list :variant 'bottom
-         :priority 80
-         :bitmap 'scrollview-sign-dot-bitmap
-         :face 'scrollview-conflict-bottom-face
-         :collector (apply-partially
-                     #'scrollview--collect-conflict-lines 'bottom))))
-
 (defun scrollview--keyword-sign-specs ()
   "Return built-in keyword sign specs from hl-todo."
   (when (scrollview--hl-todo-available-p)
-    (let (seen specs)
-      (dolist (entry (and (boundp 'hl-todo-keyword-faces)
-                          hl-todo-keyword-faces))
-        (let ((variant (scrollview--hl-todo-keyword-variant (car entry))))
-          (unless (memq variant seen)
-            (push variant seen)
-            (push (list :variant variant
-                        :priority (scrollview--keyword-priority variant)
-                        :bitmap (scrollview--keyword-bitmap variant)
-                        :face (scrollview--keyword-face variant)
-                        :collector (apply-partially
-                                    #'scrollview--collect-keyword-lines
-                                    variant))
-                  specs))))
-      (nreverse specs))))
-
-(defun scrollview--vc-sign-specs ()
-  "Return built-in VC sign specs."
-  (list
-   (list :variant 'add
-         :priority 30
-         :bitmap 'scrollview-sign-bar-bitmap
-         :face 'scrollview-vc-add-face
-         :collector (apply-partially
-                     #'scrollview--collect-vc-lines 'add))
-   (list :variant 'change
-         :priority 30
-         :bitmap 'scrollview-sign-bar-bitmap
-         :face 'scrollview-vc-change-face
-         :collector (apply-partially
-                     #'scrollview--collect-vc-lines 'change))
-   (list :variant 'delete
-         :priority 30
-         :bitmap 'scrollview-sign-delete-bitmap
-         :face 'scrollview-vc-delete-face
-         :collector (apply-partially
-                     #'scrollview--collect-vc-lines 'delete))))
+    (cl-loop with seen
+             for (keyword . _) in (and (boundp 'hl-todo-keyword-faces)
+                                       hl-todo-keyword-faces)
+             for variant = (scrollview--hl-todo-keyword-variant keyword)
+             unless (memq variant seen)
+             collect (progn
+                       (push variant seen)
+                       (list :variant variant
+                             :priority (scrollview--keyword-priority variant)
+                             :bitmap (scrollview--keyword-bitmap variant)
+                             :face (scrollview--keyword-face variant)
+                             :collector (apply-partially
+                                         #'scrollview--collect-keyword-lines
+                                         variant))))))
 
 (defun scrollview--initialize-builtins ()
   "Register built-in sign groups once."
   (unless scrollview--builtins-initialized
     (setq scrollview--builtins-initialized t)
-    (scrollview--register-builtin-sign-group
-     'search
-     (list (list :variant 'match
-                 :priority 70
-                 :bitmap 'scrollview-search-bitmap
-                 :face 'scrollview-search-face
-                 :collector #'scrollview--collect-search-lines)))
-    (scrollview--register-builtin-sign-group
-     'diagnostics (scrollview--diagnostic-sign-specs))
-    (scrollview--register-builtin-sign-group
-     'conflicts (scrollview--conflict-sign-specs))
-    (scrollview--register-builtin-sign-group
-     'keywords (scrollview--keyword-sign-specs))
-    (scrollview--register-builtin-sign-group
-     'spell
-     (list (list :variant 'misspelled
-                 :priority 35
-                 :bitmap 'scrollview-spell-bitmap
-                 :face 'scrollview-spell-face
-                 :collector #'scrollview--collect-spell-lines)))
-    (scrollview--register-builtin-sign-group
-     'vc (scrollview--vc-sign-specs))
+    (scrollview-register-sign-group
+     'search (scrollview--startup-sign-enabled-p 'search))
+    (scrollview-register-sign-spec
+     :group 'search
+     :variant 'match
+     :priority 70
+     :bitmap 'scrollview-search-bitmap
+     :face 'scrollview-search-face
+     :collector #'scrollview--collect-search-lines)
+
+    (scrollview-register-sign-group
+     'diagnostics (scrollview--startup-sign-enabled-p 'diagnostics))
+    (scrollview-register-sign-spec
+     :group 'diagnostics
+     :variant 'error
+     :priority 60
+     :bitmap 'scrollview-diagnostic-bitmap
+     :face 'scrollview-diagnostic-error-face
+     :collector (apply-partially #'scrollview--collect-diagnostic-lines
+                                 'error))
+    (scrollview-register-sign-spec
+     :group 'diagnostics
+     :variant 'warning
+     :priority 50
+     :bitmap 'scrollview-diagnostic-bitmap
+     :face 'scrollview-diagnostic-warning-face
+     :collector (apply-partially #'scrollview--collect-diagnostic-lines
+                                 'warning))
+    (scrollview-register-sign-spec
+     :group 'diagnostics
+     :variant 'info
+     :priority 40
+     :bitmap 'scrollview-diagnostic-bitmap
+     :face 'scrollview-diagnostic-info-face
+     :collector (apply-partially #'scrollview--collect-diagnostic-lines
+                                 'info))
+
+    (scrollview-register-sign-group
+     'conflicts (scrollview--startup-sign-enabled-p 'conflicts))
+    (scrollview-register-sign-spec
+     :group 'conflicts
+     :variant 'top
+     :priority 80
+     :bitmap 'scrollview-sign-dot-bitmap
+     :face 'scrollview-conflict-top-face
+     :collector (apply-partially #'scrollview--collect-conflict-lines
+                                 'top))
+    (scrollview-register-sign-spec
+     :group 'conflicts
+     :variant 'middle
+     :priority 80
+     :bitmap 'scrollview-sign-dot-bitmap
+     :face 'scrollview-conflict-middle-face
+     :collector (apply-partially #'scrollview--collect-conflict-lines
+                                 'middle))
+    (scrollview-register-sign-spec
+     :group 'conflicts
+     :variant 'bottom
+     :priority 80
+     :bitmap 'scrollview-sign-dot-bitmap
+     :face 'scrollview-conflict-bottom-face
+     :collector (apply-partially #'scrollview--collect-conflict-lines
+                                 'bottom))
+
+    (scrollview-register-sign-group
+     'keywords (scrollview--startup-sign-enabled-p 'keywords))
+    (dolist (spec (scrollview--keyword-sign-specs))
+      (apply #'scrollview-register-sign-spec :group 'keywords spec))
+
+    (scrollview-register-sign-group
+     'spell (scrollview--startup-sign-enabled-p 'spell))
+    (scrollview-register-sign-spec
+     :group 'spell
+     :variant 'misspelled
+     :priority 35
+     :bitmap 'scrollview-spell-bitmap
+     :face 'scrollview-spell-face
+     :collector #'scrollview--collect-spell-lines)
+
+    (scrollview-register-sign-group
+     'vc (scrollview--startup-sign-enabled-p 'vc))
+    (scrollview-register-sign-spec
+     :group 'vc
+     :variant 'add
+     :priority 30
+     :bitmap 'scrollview-sign-bar-bitmap
+     :face 'scrollview-vc-add-face
+     :collector (apply-partially #'scrollview--collect-vc-lines 'add))
+    (scrollview-register-sign-spec
+     :group 'vc
+     :variant 'change
+     :priority 30
+     :bitmap 'scrollview-sign-bar-bitmap
+     :face 'scrollview-vc-change-face
+     :collector (apply-partially #'scrollview--collect-vc-lines 'change))
+    (scrollview-register-sign-spec
+     :group 'vc
+     :variant 'delete
+     :priority 30
+     :bitmap 'scrollview-sign-delete-bitmap
+     :face 'scrollview-vc-delete-face
+     :collector (apply-partially #'scrollview--collect-vc-lines 'delete))
 
     (add-hook 'isearch-update-post-hook #'scrollview--after-isearch-update)
     (add-hook 'isearch-mode-end-hook #'scrollview--after-isearch-end)

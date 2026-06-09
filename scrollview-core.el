@@ -733,31 +733,30 @@ the text for one redisplay frame before the debounced refresh corrects them."
 LOCATION is one of `next', `prev', `first', or `last'."
   (let* ((count (or count 1))
          (lines (scrollview--visible-sign-lines groups))
-         (current (line-number-at-pos nil t))
-         target)
+         (current (line-number-at-pos nil t)))
     (unless lines
       (user-error "No scrollview signs are visible"))
-    (setq target
-          (pcase location
-            ('first (car lines))
-            ('last (seq-last lines))
-            ('next (or (nth (1- count)
+    (let ((target
+           (pcase location
+             ('first (car lines))
+             ('last (seq-last lines))
+             ('next (or (nth (1- count)
+                             (seq-filter
+                              (lambda (line) (> line current)) lines))
+                        (and scrollview-wrap-navigation
+                             (nth (mod (1- count) (length lines)) lines))
+                        (seq-last lines)))
+             ('prev (let ((previous
+                           (nreverse
                             (seq-filter
-                             (lambda (line) (> line current)) lines))
-                       (and scrollview-wrap-navigation
-                            (nth (mod (1- count) (length lines)) lines))
-                       (seq-last lines)))
-            ('prev (let ((previous
-                          (nreverse
-                           (seq-filter
-                            (lambda (line) (< line current)) lines))))
-                     (or (nth (1- count) previous)
-                         (and scrollview-wrap-navigation
-                              (nth (mod (1- count) (length lines))
-                                   (reverse lines)))
-                         (car lines))))))
+                             (lambda (line) (< line current)) lines))))
+                      (or (nth (1- count) previous)
+                          (and scrollview-wrap-navigation
+                               (nth (mod (1- count) (length lines))
+                                    (reverse lines)))
+                          (car lines)))))))
     (goto-char (point-min))
-    (forward-line (1- target))))
+      (forward-line (1- target)))))
 
 ;;;###autoload
 (defun scrollview-next (&optional count groups)

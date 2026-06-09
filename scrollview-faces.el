@@ -270,83 +270,53 @@ The foreground is synchronized from diff faces, with an error fallback."
            thereis (or (scrollview--face-color face '(:foreground))
                        (scrollview--face-underline-color face))))
 
-(defun scrollview--sync-diagnostic-face (target inherit source-faces)
-  "Synchronize TARGET with INHERIT and SOURCE-FACES."
-  (let ((color (scrollview--diagnostic-source-color source-faces)))
-    (set-face-attribute target nil
-                        :inherit inherit
-                        :foreground (or color 'unspecified)
-                        :background 'unspecified
-                        :inverse-video nil)
-    color))
-
-(defun scrollview--sync-vc-color-face (target inherit source-faces fallback)
-  "Synchronize TARGET with INHERIT, SOURCE-FACES, and FALLBACK."
-  (let ((color (or (scrollview--foreground-source-color source-faces)
-                   fallback)))
-    (set-face-attribute target nil
-                        :inherit inherit
-                        :foreground color
-                        :background 'unspecified
-                        :inverse-video nil)
-    color))
-
 (defun scrollview--sync-diagnostic-faces (&rest _)
   "Synchronize diagnostic sign faces with diagnostic source faces."
   (let ((state
-         (list
-          :error (scrollview--diagnostic-source-color
-                  '(flymake-error flycheck-error error))
-          :warning (scrollview--diagnostic-source-color
-                    '(flymake-warning flycheck-warning warning))
-          :info (scrollview--diagnostic-source-color
-                 '(flymake-note flycheck-info success warning)))))
+         (cl-loop for (key target inherit source-faces)
+                  in '((:error scrollview-diagnostic-error-face
+                        flymake-error (flymake-error flycheck-error error))
+                       (:warning scrollview-diagnostic-warning-face
+                        flymake-warning (flymake-warning flycheck-warning warning))
+                       (:info scrollview-diagnostic-info-face
+                        flymake-note (flymake-note flycheck-info success warning)))
+                  collect (list key target inherit
+                                (scrollview--diagnostic-source-color source-faces)))))
     (unless (equal state scrollview--diagnostic-face-state)
       (setq scrollview--diagnostic-face-state state)
-      (scrollview--sync-diagnostic-face
-       'scrollview-diagnostic-error-face
-       'flymake-error
-       '(flymake-error flycheck-error error))
-      (scrollview--sync-diagnostic-face
-       'scrollview-diagnostic-warning-face
-       'flymake-warning
-       '(flymake-warning flycheck-warning warning))
-      (scrollview--sync-diagnostic-face
-       'scrollview-diagnostic-info-face
-       'flymake-note
-       '(flymake-note flycheck-info success warning))
+      (pcase-dolist (`(,_ ,target ,inherit ,color) state)
+        (set-face-attribute target nil
+                            :inherit inherit
+                            :foreground (or color 'unspecified)
+                            :background 'unspecified
+                            :inverse-video nil))
       (clrhash scrollview--sign-render-face-cache))))
 
 (defun scrollview--sync-vc-faces (&rest _)
   "Synchronize VC sign faces with diff source faces."
   (let ((state
-         (list
-          :add (or (scrollview--foreground-source-color
-                    '(diff-added diff-refine-added success))
-                   "green3")
-          :change (or (scrollview--foreground-source-color
-                       '(diff-changed diff-refine-changed warning))
-                      "goldenrod")
-          :delete (or (scrollview--foreground-source-color
-                       '(diff-removed diff-refine-removed error))
-                      "red3"))))
+         (cl-loop for (key target inherit source-faces fallback)
+                  in '((:add scrollview-vc-add-face
+                        diff-added (diff-added diff-refine-added success)
+                        "green3")
+                       (:change scrollview-vc-change-face
+                        diff-changed (diff-changed diff-refine-changed warning)
+                        "goldenrod")
+                       (:delete scrollview-vc-delete-face
+                        diff-removed (diff-removed diff-refine-removed error)
+                        "red3"))
+                  collect (list key target inherit
+                                (or (scrollview--foreground-source-color
+                                     source-faces)
+                                    fallback)))))
     (unless (equal state scrollview--vc-face-state)
       (setq scrollview--vc-face-state state)
-      (scrollview--sync-vc-color-face
-       'scrollview-vc-add-face
-       'diff-added
-       '(diff-added diff-refine-added success)
-       "green3")
-      (scrollview--sync-vc-color-face
-       'scrollview-vc-change-face
-       'diff-changed
-       '(diff-changed diff-refine-changed warning)
-       "goldenrod")
-      (scrollview--sync-vc-color-face
-       'scrollview-vc-delete-face
-       'diff-removed
-       '(diff-removed diff-refine-removed error)
-       "red3")
+      (pcase-dolist (`(,_ ,target ,inherit ,color) state)
+        (set-face-attribute target nil
+                            :inherit inherit
+                            :foreground color
+                            :background 'unspecified
+                            :inverse-video nil))
       (clrhash scrollview--sign-render-face-cache))))
 
 (defun scrollview--sync-faces (&rest _)
