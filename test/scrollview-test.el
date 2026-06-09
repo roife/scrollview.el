@@ -1,0 +1,726 @@
+;;; scrollview-test.el --- Tests for scrollview.el -*- lexical-binding: t; -*-
+
+;;; Code:
+
+(require 'cl-lib)
+(require 'ert)
+(require 'scrollview)
+
+(defun scrollview-test--reset-state ()
+  "Reset scrollview global state used by tests."
+  (maphash (lambda (_window overlays)
+             (mapc #'delete-overlay overlays))
+           scrollview--window-overlays)
+  (setq scrollview--window-overlays (make-hash-table :test #'eq))
+  (setq scrollview--pending-windows (make-hash-table :test #'eq))
+  (setq scrollview--pending-all nil)
+  (when (timerp scrollview--refresh-timer)
+    (cancel-timer scrollview--refresh-timer))
+  (setq scrollview--refresh-timer nil)
+  (remove-hook 'window-configuration-change-hook
+               #'scrollview--window-configuration-change)
+  (remove-hook 'window-size-change-functions
+               #'scrollview--window-size-change)
+  (remove-hook 'post-command-hook #'scrollview--post-command)
+  (advice-remove 'lazy-highlight-cleanup
+                 #'scrollview--after-lazy-highlight-cleanup)
+  (setq scrollview--global-hooks-installed nil)
+  (setq scrollview--last-selected-window nil)
+  (setq scrollview--sign-groups (make-hash-table :test #'eq))
+  (setq scrollview--sign-specs (make-hash-table :test #'eql))
+  (setq scrollview--window-sign-cache (make-hash-table :test #'eq))
+  (setq scrollview--sign-cache-generation 0)
+  (setq scrollview--sign-render-face-cache (make-hash-table :test #'eq))
+  (setq scrollview--thumb-face-state nil)
+  (setq scrollview--diagnostic-face-state nil)
+  (setq scrollview--next-sign-id 0)
+  (setq scrollview--builtins-initialized nil)
+  (setq scrollview--refreshing nil)
+  (setq scrollview--last-search-pattern nil)
+  (setq scrollview--last-search-regexp nil))
+
+(defun scrollview-test--insert-lines (count &optional prefix)
+  "Insert COUNT lines using PREFIX."
+  (dotimes (i count)
+    (insert (format "%s%d" (or prefix "line ") (1+ i)))
+    (when (< i (1- count))
+      (insert "\n"))))
+
+(defmacro scrollview-test--with-displayed-buffer (&rest body)
+  "Run BODY in a temporary buffer displayed in the selected window."
+  (declare (indent 0) (debug t))
+  `(let ((buffer (generate-new-buffer " *scrollview-test*"))
+         (original-buffer (current-buffer)))
+     (unwind-protect
+         (progn
+           (switch-to-buffer buffer)
+           ,@body)
+       (when (buffer-live-p buffer)
+         (with-current-buffer buffer
+           (when (bound-and-true-p scrollview-mode)
+             (scrollview-mode -1)))
+         (when (eq (current-buffer) buffer)
+           (switch-to-buffer original-buffer))
+         (kill-buffer buffer))
+       (scrollview-test--reset-state))))
+
+(defun scrollview-test--overlay-displays (window)
+  "Return display specs for scrollview overlays in WINDOW."
+  (mapcar (lambda (overlay)
+            (get-text-property
+             0 'display (overlay-get overlay 'after-string)))
+          (gethash window scrollview--window-overlays)))
+
+(defun scrollview-test--face-state (face)
+  "Return restorable FACE state."
+  (list :inherit (face-attribute face :inherit nil 'default)
+        :foreground (face-attribute face :foreground nil 'default)
+        :background (face-attribute face :background nil 'default)
+        :underline (face-attribute face :underline nil 'default)
+        :inverse-video (face-attribute face :inverse-video nil 'default)))
+
+(defun scrollview-test--restore-face-state (face state)
+  "Restore FACE from STATE."
+  (set-face-attribute face nil
+                      :inherit (plist-get state :inherit)
+                      :foreground (plist-get state :foreground)
+                      :background (plist-get state :background)
+                      :underline (plist-get state :underline)
+                      :inverse-video (plist-get state :inverse-video)))
+
+(ert-deftest scrollview-thumb-size ()
+  (should (= (scrollview--compute-thumb-size 10 100) 1))
+  (should (= (scrollview--compute-thumb-size 10 20) 5))
+  (should (= (scrollview--compute-thumb-size 10 5) 10)))
+
+(ert-deftest scrollview-thumb-top-clamps-at-bottom ()
+  (should (= (scrollview--compute-thumb-top 10 100 1 1 nil) 0))
+  (should (= (scrollview--compute-thumb-top 10 100 50 1 nil) 4))
+  (should (= (scrollview--compute-thumb-top 10 100 50 2 t) 8)))
+
+(ert-deftest scrollview-line-to-row ()
+  (should (= (scrollview--line-to-row 1 10 100) 0))
+  (should (= (scrollview--line-to-row 50 10 100) 4))
+  (should (= (scrollview--line-to-row 100 10 100) 9))
+  (should (= (scrollview--line-to-row 200 10 100) 9)))
+
+(ert-deftest scrollview-line-count-cache-invalidates-on-edit ()
+  (with-temp-buffer
+    (insert "one\ntwo")
+    (should (= (scrollview--line-count) 2))
+    (should (= (scrollview--line-count) 2))
+    (goto-char (point-max))
+    (insert "\nthree")
+    (should (= (scrollview--line-count) 3))))
+
+(ert-deftest scrollview-thumb-face-follows-region-background ()
+  (let ((old-region-bg (face-attribute 'region :background nil 'default))
+        (old-thumb-fg (face-attribute 'scrollview-thumb-face
+                                      :foreground nil 'default))
+        (old-thumb-bg (face-attribute 'scrollview-thumb-face
+                                      :background nil 'default))
+        (old-thumb-inherit (face-attribute 'scrollview-thumb-face
+                                           :inherit nil 'default))
+        (old-thumb-inverse (face-attribute 'scrollview-thumb-face
+                                           :inverse-video nil 'default)))
+    (unwind-protect
+        (progn
+          (set-face-attribute 'region nil :background "red")
+          (scrollview--sync-thumb-face)
+          (should (equal (face-attribute 'scrollview-thumb-face
+                                         :foreground nil t)
+                         "red"))
+          (should (equal (face-attribute 'scrollview-thumb-face
+                                         :background nil t)
+                         "red"))
+          (should-not (face-attribute 'scrollview-thumb-face
+                                      :inherit nil t)))
+      (set-face-attribute 'region nil :background old-region-bg)
+      (set-face-attribute 'scrollview-thumb-face nil
+                          :inherit old-thumb-inherit
+                          :foreground old-thumb-fg
+                          :background old-thumb-bg
+                          :inverse-video old-thumb-inverse))))
+
+(ert-deftest scrollview-sign-render-face-preserves-background-by-default ()
+  (should (eq (scrollview--sign-render-face 'scrollview-search-face)
+              'scrollview-search-face)))
+
+(ert-deftest scrollview-sign-render-face-has-no-background-when-enabled ()
+  (let ((old-isearch-fg (face-attribute 'isearch :foreground nil 'default))
+        (old-isearch-bg (face-attribute 'isearch :background nil 'default))
+        (scrollview-signs-no-background t))
+    (unwind-protect
+        (progn
+          (set-face-attribute 'isearch nil
+                              :foreground "black"
+                              :background "yellow")
+          (let ((face (scrollview--sign-render-face
+                       'scrollview-search-face)))
+            (should (not (eq face 'scrollview-search-face)))
+            (should (equal (face-attribute face :foreground nil t)
+                           "yellow"))
+            (should (eq (face-attribute face :background nil t)
+                        'unspecified))))
+      (set-face-attribute 'isearch nil
+                          :foreground old-isearch-fg
+                          :background old-isearch-bg))))
+
+(ert-deftest scrollview-default-startup-enables-only-search-and-diagnostics ()
+  (scrollview-test--reset-state)
+  (let ((scrollview-signs-on-startup '(search diagnostics)))
+    (scrollview--initialize-builtins)
+    (should (scrollview-sign-group-active-p 'diagnostics))
+    (dolist (group '(conflicts keywords spell vc))
+      (should-not (scrollview-sign-group-active-p group)))))
+
+(ert-deftest scrollview-builtins-register-new-sign-groups ()
+  (scrollview-test--reset-state)
+  (let ((scrollview-signs-on-startup nil))
+    (scrollview--initialize-builtins)
+    (dolist (group '(conflicts keywords spell vc))
+      (should (memq group (scrollview--sign-group-list))))
+    (should-not (memq 'marks (scrollview--sign-group-list)))))
+
+(ert-deftest scrollview-diagnostic-bitmap-is-dot ()
+  (scrollview-test--reset-state)
+  (let ((scrollview-signs-on-startup '(diagnostics))
+        specs)
+    (scrollview--initialize-builtins)
+    (maphash (lambda (_id spec)
+               (when (eq (scrollview--sign-spec-group spec) 'diagnostics)
+                 (push spec specs)))
+             scrollview--sign-specs)
+    (should specs)
+    (dolist (spec specs)
+      (should (eq (scrollview--sign-spec-bitmap spec)
+                  'scrollview-diagnostic-bitmap)))))
+
+(ert-deftest scrollview-keyword-bitmap-uses-first-letter ()
+  (scrollview-test--reset-state)
+  (let ((scrollview-signs-on-startup '(keywords))
+        (scrollview-keyword-patterns '((hack . ("\\<HACK\\>"))))
+        spec)
+    (scrollview--initialize-builtins)
+    (maphash (lambda (_id candidate)
+               (when (and (eq (scrollview--sign-spec-group candidate)
+                              'keywords)
+                          (eq (scrollview--sign-spec-variant candidate)
+                              'hack))
+                 (setq spec candidate)))
+             scrollview--sign-specs)
+    (should spec)
+    (should (eq (scrollview--sign-spec-bitmap spec)
+                'scrollview-keyword-H-bitmap))))
+
+(ert-deftest scrollview-spell-bitmap-is-tilde ()
+  (scrollview-test--reset-state)
+  (let ((scrollview-signs-on-startup '(spell))
+        spec)
+    (scrollview--initialize-builtins)
+    (maphash (lambda (_id candidate)
+               (when (eq (scrollview--sign-spec-group candidate) 'spell)
+                 (setq spec candidate)))
+             scrollview--sign-specs)
+    (should spec)
+    (should (eq (scrollview--sign-spec-bitmap spec)
+                'scrollview-spell-bitmap))))
+
+(ert-deftest scrollview-vc-bar-bitmap-fills-tall-line-cells ()
+  (scrollview-test--reset-state)
+  (let ((scrollview-signs-on-startup '(vc))
+        variants)
+    (scrollview--initialize-builtins)
+    (maphash (lambda (_id spec)
+               (when (eq (scrollview--sign-spec-group spec) 'vc)
+                 (push (cons (scrollview--sign-spec-variant spec)
+                             (scrollview--sign-spec-bitmap spec))
+                       variants)))
+             scrollview--sign-specs)
+    (should (>= (length scrollview--vc-bar-bitmap-vector) 32))
+    (should (eq (alist-get 'add variants) 'scrollview-sign-bar-bitmap))
+    (should (eq (alist-get 'change variants) 'scrollview-sign-bar-bitmap))
+    (should (eq (alist-get 'delete variants) 'scrollview-sign-delete-bitmap))))
+
+(ert-deftest scrollview-diagnostic-level-honors-flymake-category ()
+  (let ((symbols '(scrollview-test-eglot-error
+                   scrollview-test-eglot-warning
+                   scrollview-test-eglot-note)))
+    (unwind-protect
+        (progn
+          (put 'scrollview-test-eglot-error
+               'flymake-category 'flymake-error)
+          (put 'scrollview-test-eglot-warning
+               'flymake-category 'flymake-warning)
+          (put 'scrollview-test-eglot-note
+               'flymake-category 'flymake-note)
+          (should (eq (scrollview--diagnostic-level
+                       'scrollview-test-eglot-error)
+                      'error))
+          (should (eq (scrollview--diagnostic-level
+                       'scrollview-test-eglot-warning)
+                      'warning))
+          (should (eq (scrollview--diagnostic-level
+                       'scrollview-test-eglot-note)
+                      'info))
+          (should (eq (scrollview--diagnostic-level 1) 'error))
+          (should (eq (scrollview--diagnostic-level 2) 'warning))
+          (should (eq (scrollview--diagnostic-level 3) 'info)))
+      (dolist (symbol symbols)
+        (cl-remf (symbol-plist symbol) 'flymake-category)))))
+
+(ert-deftest scrollview-diagnostic-faces-inherit-diagnostic-faces ()
+  (scrollview-test--reset-state)
+  (let ((scrollview-signs-on-startup '(diagnostics))
+        specs)
+    (scrollview--initialize-builtins)
+    (maphash (lambda (_id spec)
+               (when (eq (scrollview--sign-spec-group spec) 'diagnostics)
+                 (push spec specs)))
+             scrollview--sign-specs)
+    (dolist (spec specs)
+      (pcase (scrollview--sign-spec-variant spec)
+        ('error
+         (should (eq (scrollview--sign-spec-face spec)
+                     'scrollview-diagnostic-error-face))
+         (should (eq (face-attribute (scrollview--sign-spec-face spec)
+                                     :inherit nil t)
+                     'flymake-error)))
+        ('warning
+         (should (eq (scrollview--sign-spec-face spec)
+                     'scrollview-diagnostic-warning-face))
+         (should (eq (face-attribute (scrollview--sign-spec-face spec)
+                                     :inherit nil t)
+                     'flymake-warning)))
+        ('info
+         (should (eq (scrollview--sign-spec-face spec)
+                     'scrollview-diagnostic-info-face))
+         (should (eq (face-attribute (scrollview--sign-spec-face spec)
+                                     :inherit nil t)
+                     'flymake-note)))))))
+
+(ert-deftest scrollview-diagnostic-faces-copy-source-colors ()
+  (scrollview-test--reset-state)
+  (require 'flymake)
+  (let* ((faces '(flymake-error flymake-warning flymake-note
+                  scrollview-diagnostic-error-face
+                  scrollview-diagnostic-warning-face
+                  scrollview-diagnostic-info-face))
+         (states (mapcar (lambda (face)
+                           (cons face (scrollview-test--face-state face)))
+                         faces)))
+    (unwind-protect
+        (progn
+          (set-face-attribute 'flymake-error nil
+                              :foreground 'unspecified
+                              :underline '(:style wave :color "firebrick")
+                              :background 'unspecified)
+          (set-face-attribute 'flymake-warning nil
+                              :foreground "goldenrod"
+                              :underline 'unspecified
+                              :background 'unspecified)
+          (set-face-attribute 'flymake-note nil
+                              :foreground 'unspecified
+                              :underline 'unspecified
+                              :background "seagreen")
+          (setq scrollview--diagnostic-face-state nil)
+          (scrollview--sync-diagnostic-faces)
+          (should (equal (face-attribute
+                          'scrollview-diagnostic-error-face
+                          :foreground nil t)
+                         "firebrick"))
+          (should (equal (face-attribute
+                          'scrollview-diagnostic-warning-face
+                          :foreground nil t)
+                         "goldenrod"))
+          (should (equal (face-attribute
+                          'scrollview-diagnostic-info-face
+                          :foreground nil t)
+                         "seagreen")))
+      (dolist (state states)
+        (scrollview-test--restore-face-state (car state) (cdr state)))
+      (setq scrollview--diagnostic-face-state nil)
+      (scrollview--sync-diagnostic-faces))))
+
+(ert-deftest scrollview-refresh-resyncs-diagnostic-face-colors ()
+  (scrollview-test--reset-state)
+  (require 'flymake)
+  (let* ((faces '(flymake-error scrollview-diagnostic-error-face))
+         (states (mapcar (lambda (face)
+                           (cons face (scrollview-test--face-state face)))
+                         faces)))
+    (unwind-protect
+        (scrollview-test--with-displayed-buffer
+          (scrollview-test--insert-lines 50)
+          (let ((scrollview-signs-on-startup nil)
+                (scrollview-line-limit -1)
+                (scrollview-byte-limit -1))
+            (set-face-attribute 'flymake-error nil
+                                :foreground 'unspecified
+                                :underline 'unspecified
+                                :background 'unspecified)
+            (setq scrollview--diagnostic-face-state nil)
+            (scrollview--sync-diagnostic-faces)
+            (should (eq (face-attribute
+                         'scrollview-diagnostic-error-face
+                         :foreground nil t)
+                        'unspecified))
+            (set-face-attribute 'flymake-error nil
+                                :foreground 'unspecified
+                                :underline '(:style wave :color "firebrick")
+                                :background 'unspecified)
+            (cl-letf (((symbol-function 'scrollview--fringe-available-p)
+                       (lambda (_window) t)))
+              (scrollview-mode 1)
+              (scrollview-refresh (selected-window)))
+            (should (equal (face-attribute
+                            'scrollview-diagnostic-error-face
+                            :foreground nil t)
+                           "firebrick"))))
+      (dolist (state states)
+        (scrollview-test--restore-face-state (car state) (cdr state)))
+      (setq scrollview--diagnostic-face-state nil)
+      (scrollview--sync-diagnostic-faces))))
+
+(ert-deftest scrollview-priority-conflict-resolution ()
+  (let* ((scrollview-signs-no-background t)
+         (high (scrollview--make-sign-spec
+                :id 1 :group 'test :variant nil :priority 10
+                :bitmap 'scrollview-search-bitmap
+                :face 'scrollview-search-face
+                :collector #'ignore :current-only nil))
+         (low (scrollview--make-sign-spec
+               :id 2 :group 'test :variant nil :priority -1
+               :bitmap 'scrollview-sign-dot-bitmap
+               :face 'scrollview-keyword-face
+               :collector #'ignore :current-only nil))
+         (info '(:window-lines 5 :buffer-lines 5
+                 :thumb-top 0 :thumb-size 5 :restricted nil))
+         (slots (scrollview--build-slots
+                 nil info
+                 (list (list :line 3 :spec high)
+                       (list :line 4 :spec low)))))
+    (should (eq (plist-get (aref slots 0) :type) 'scrollbar))
+    (should (eq (plist-get (aref slots 2) :type) 'sign))
+    (should (eq (plist-get (aref slots 2) :bitmap)
+                'scrollview-search-bitmap))
+    (should (eq (face-attribute (plist-get (aref slots 2) :face)
+                                :background nil t)
+                'unspecified))
+    (should (eq (plist-get (aref slots 3) :type) 'scrollbar))))
+
+(ert-deftest scrollview-refresh-renders-fringe-overlays ()
+  (scrollview-test--reset-state)
+  (scrollview-test--with-displayed-buffer
+    (scrollview-test--insert-lines 200)
+    (goto-char (point-min))
+    (let ((scrollview-visibility 'overflow)
+          (scrollview-signs-on-startup nil)
+          (scrollview-line-limit -1)
+          (scrollview-byte-limit -1))
+      (cl-letf (((symbol-function 'scrollview--fringe-available-p)
+                 (lambda (_window) t)))
+        (scrollview-mode 1)
+        (scrollview-refresh (selected-window))
+        (let ((displays (scrollview-test--overlay-displays
+                         (selected-window))))
+          (should displays)
+          (should (member '(right-fringe filled-rectangle
+                                         scrollview-thumb-face)
+                          displays)))
+        (scrollview-mode -1)
+        (should-not (gethash (selected-window)
+                             scrollview--window-overlays))))))
+
+(ert-deftest scrollview-custom-sign-navigation ()
+  (scrollview-test--reset-state)
+  (scrollview-test--with-displayed-buffer
+    (scrollview-test--insert-lines 20)
+    (goto-char (point-min))
+    (let ((scrollview-visibility 'info)
+          (scrollview-signs-on-startup nil)
+          (scrollview-line-limit -1)
+          (scrollview-byte-limit -1))
+      (cl-letf (((symbol-function 'scrollview--fringe-available-p)
+                 (lambda (_window) t)))
+        (scrollview-register-sign-group 'scrollview-test t)
+        (scrollview-register-sign-spec
+         :group 'scrollview-test
+         :variant 'mock
+         :priority 80
+         :bitmap 'scrollview-search-bitmap
+         :face 'scrollview-search-face
+         :collector (lambda (_window) '(2 5 2)))
+        (scrollview-mode 1)
+        (should (equal (scrollview--visible-sign-lines
+                        '(scrollview-test))
+                       '(2 5)))
+        (scrollview-next 1 '(scrollview-test))
+        (should (= (line-number-at-pos nil t) 2))
+        (scrollview-next 1 '(scrollview-test))
+        (should (= (line-number-at-pos nil t) 5))
+        (scrollview-prev 1 '(scrollview-test))
+        (should (= (line-number-at-pos nil t) 2))))))
+
+(ert-deftest scrollview-custom-sign-renders-over-scrollbar ()
+  (scrollview-test--reset-state)
+  (scrollview-test--with-displayed-buffer
+    (scrollview-test--insert-lines 200)
+    (goto-char (point-min))
+    (let ((scrollview-visibility 'overflow)
+          (scrollview-signs-on-startup nil)
+          (scrollview-signs-no-background t)
+          (scrollview-line-limit -1)
+          (scrollview-byte-limit -1))
+      (cl-letf (((symbol-function 'scrollview--fringe-available-p)
+                 (lambda (_window) t)))
+        (scrollview-register-sign-group 'scrollview-test-render t)
+        (scrollview-register-sign-spec
+         :group 'scrollview-test-render
+         :variant 'mock
+         :priority 80
+         :bitmap 'scrollview-search-bitmap
+         :face 'scrollview-search-face
+         :collector (lambda (_window) '(1)))
+        (scrollview-mode 1)
+        (scrollview-refresh (selected-window))
+        (let ((displays (scrollview-test--overlay-displays
+                         (selected-window))))
+          (should (cl-find-if
+                   (lambda (display)
+                     (and (eq (car display) 'right-fringe)
+                          (eq (cadr display) 'scrollview-search-bitmap)
+                          (eq (face-attribute (caddr display)
+                                              :background nil t)
+                              'unspecified)))
+                   displays)))))))
+
+(ert-deftest scrollview-scroll-hook-refreshes-immediately ()
+  (scrollview-test--reset-state)
+  (let ((window (selected-window))
+        called)
+    (cl-letf (((symbol-function 'scrollview--refresh-now)
+               (lambda (&optional refreshed-window reuse-signs)
+                 (setq called (list refreshed-window reuse-signs)))))
+      (scrollview--after-window-scroll window nil))
+    (should (equal called (list window t)))
+    (should-not (timerp scrollview--refresh-timer))))
+
+(ert-deftest scrollview-scroll-refresh-reuses-sign-cache ()
+  (scrollview-test--reset-state)
+  (scrollview-test--with-displayed-buffer
+    (scrollview-test--insert-lines 200)
+    (goto-char (point-min))
+    (let ((scrollview-visibility 'info)
+          (scrollview-signs-on-startup nil)
+          (scrollview-line-limit -1)
+          (scrollview-byte-limit -1)
+          (calls 0))
+      (cl-letf (((symbol-function 'scrollview--fringe-available-p)
+                 (lambda (_window) t)))
+        (scrollview-register-sign-group 'scrollview-test-cache t)
+        (scrollview-register-sign-spec
+         :group 'scrollview-test-cache
+         :variant 'mock
+         :priority 80
+         :bitmap 'scrollview-search-bitmap
+         :face 'scrollview-search-face
+         :collector (lambda (_window)
+                      (cl-incf calls)
+                      '(1 100)))
+        (scrollview-mode 1)
+        (scrollview-refresh (selected-window))
+        (should (= calls 1))
+        (scrollview--after-window-scroll (selected-window) nil)
+        (should (= calls 1))
+        (scrollview-refresh (selected-window))
+        (should (= calls 2))))))
+
+(ert-deftest scrollview-buffer-change-invalidates-sign-cache ()
+  (scrollview-test--reset-state)
+  (scrollview-test--with-displayed-buffer
+    (scrollview-test--insert-lines 200)
+    (goto-char (point-min))
+    (let ((scrollview-visibility 'info)
+          (scrollview-signs-on-startup nil)
+          (scrollview-line-limit -1)
+          (scrollview-byte-limit -1)
+          (calls 0))
+      (cl-letf (((symbol-function 'scrollview--fringe-available-p)
+                 (lambda (_window) t)))
+        (scrollview-register-sign-group 'scrollview-test-change t)
+        (scrollview-register-sign-spec
+         :group 'scrollview-test-change
+         :variant 'mock
+         :priority 80
+         :bitmap 'scrollview-search-bitmap
+         :face 'scrollview-search-face
+         :collector (lambda (_window)
+                      (cl-incf calls)
+                      '(1 100)))
+        (scrollview-mode 1)
+        (scrollview-refresh (selected-window))
+        (should (= calls 1))
+        (goto-char (point-max))
+        (insert "\nnew")
+        (scrollview--after-window-scroll (selected-window) nil)
+        (should (= calls 2))))))
+
+(ert-deftest scrollview-search-collector-follows-isearch-highlights ()
+  (scrollview-test--reset-state)
+  (with-temp-buffer
+    (insert "foo\nbar\nfoo")
+    (setq scrollview--last-search-pattern "foo")
+    (setq scrollview--last-search-regexp nil)
+    (should-not (scrollview--collect-search-lines nil))
+    (let ((isearch-mode t)
+          (isearch-success t)
+          (isearch-string "foo")
+          (isearch-regexp nil))
+      (should (equal (scrollview--collect-search-lines nil) '(1 3)))
+      (goto-char (point-max))
+      (insert "\nfoo")
+      (should (equal (scrollview--collect-search-lines nil) '(1 3 4))))
+    (let ((overlay (make-overlay (point-min) (point-min))))
+      (unwind-protect
+          (let ((isearch-lazy-highlight-overlays (list overlay)))
+            (should (equal (scrollview--collect-search-lines nil)
+                           '(1 3 4)))
+            (delete-overlay overlay)
+            (should-not (scrollview--collect-search-lines nil)))
+        (delete-overlay overlay)))
+    (let ((isearch-mode t)
+          (isearch-success nil)
+          (isearch-string "foo")
+          (isearch-regexp nil))
+      (should-not (scrollview--collect-search-lines nil)))))
+
+(ert-deftest scrollview-isearch-update-and-end-keep-retained-source ()
+  (scrollview-test--reset-state)
+  (with-temp-buffer
+    (let ((isearch-mode t)
+          (isearch-success t)
+          (isearch-string "foo")
+          (isearch-regexp nil))
+      (cl-letf (((symbol-function 'scrollview--schedule-buffer-refresh)
+                 #'ignore))
+        (scrollview--after-isearch-update)))
+    (should (equal scrollview--last-search-pattern "foo"))
+    (cl-letf (((symbol-function 'scrollview--schedule-buffer-refresh)
+               #'ignore))
+      (scrollview--after-isearch-end))
+    (should (equal scrollview--last-search-pattern "foo"))
+    (let ((overlay (make-overlay (point-min) (point-min))))
+      (unwind-protect
+          (let ((isearch-lazy-highlight-overlays (list overlay)))
+            (should (equal (scrollview--search-source) '("foo" nil)))
+            (delete-overlay overlay)
+            (should-not (scrollview--search-source)))
+        (delete-overlay overlay)))))
+
+(ert-deftest scrollview-isearch-update-clears-failed-search ()
+  (scrollview-test--reset-state)
+  (with-temp-buffer
+    (setq scrollview--last-search-pattern "foo")
+    (setq scrollview--last-search-regexp nil)
+    (let ((isearch-mode t)
+          (isearch-success nil)
+          (isearch-string "missing")
+          (isearch-regexp nil))
+      (cl-letf (((symbol-function 'scrollview--schedule-buffer-refresh)
+                 #'ignore))
+        (scrollview--after-isearch-update)))
+    (should-not scrollview--last-search-pattern)))
+
+(ert-deftest scrollview-conflict-collector ()
+  (scrollview-test--reset-state)
+  (with-temp-buffer
+    (insert "ok\n<<<<<<< ours\nleft\n=======\nright\n>>>>>>> theirs\n")
+    (should (equal (scrollview--collect-conflict-lines 'top) '(2)))
+    (should (equal (scrollview--collect-conflict-lines 'middle) '(4)))
+    (should (equal (scrollview--collect-conflict-lines 'bottom) '(6)))))
+
+(ert-deftest scrollview-keyword-collector ()
+  (scrollview-test--reset-state)
+  (with-temp-buffer
+    (emacs-lisp-mode)
+    (insert ";; TODO one\n(message \"FIXME in string\")\n;; FIXME two\n")
+    (let ((scrollview-keyword-patterns
+           '((todo . ("\\<TODO\\>"))
+             (fixme . ("\\<FIXME\\>"))))
+          (scrollview-keywords-comments-only nil))
+      (should (equal (scrollview--collect-keyword-lines 'todo) '(1)))
+      (should (equal (scrollview--collect-keyword-lines 'fixme) '(2 3))))
+    (setq scrollview--collector-cache nil)
+    (let ((scrollview-keyword-patterns
+           '((todo . ("\\<TODO\\>"))
+             (fixme . ("\\<FIXME\\>"))))
+          (scrollview-keywords-comments-only t))
+      (should (equal (scrollview--collect-keyword-lines 'todo) '(1)))
+      (should (equal (scrollview--collect-keyword-lines 'fixme) '(3))))))
+
+(ert-deftest scrollview-spell-collector-uses-flyspell-overlays ()
+  (scrollview-test--reset-state)
+  (with-temp-buffer
+    (insert "good\nbadword\nagain\n")
+    (goto-char (point-min))
+    (let ((overlay (make-overlay (line-beginning-position 2)
+                                 (line-end-position 2))))
+      (unwind-protect
+          (progn
+            (overlay-put overlay 'face 'flyspell-incorrect)
+            (overlay-put overlay 'flyspell-overlay t)
+            (should (equal (scrollview--collect-spell-lines nil) '(2))))
+        (delete-overlay overlay)))))
+
+(ert-deftest scrollview-vc-diff-parser ()
+  (let* ((diff (concat
+                "@@ -1,3 +1,4 @@\n"
+                " one\n"
+                "-two\n"
+                "+two changed\n"
+                "+two added\n"
+                " three\n"
+                "@@ -8,2 +9,0 @@\n"
+                "-old\n"
+                "-gone\n"))
+         (lines (scrollview--parse-unified-diff-lines diff)))
+    (should (equal (plist-get lines :change) '(2)))
+    (should (equal (plist-get lines :add) '(3)))
+    (should (equal (plist-get lines :delete) '(9)))))
+
+(ert-deftest scrollview-vc-collector-sees-unsaved-git-buffer ()
+  (skip-unless (executable-find "git"))
+  (let* ((directory (make-temp-file "scrollview-vc-" t))
+         (file (expand-file-name "sample.txt" directory))
+         (default-directory directory)
+         buffer)
+    (unwind-protect
+        (progn
+          (should (eq 0 (process-file "git" nil nil nil "init" "-q")))
+          (write-region "one\ntwo\nthree\n" nil file nil 'silent)
+          (should (eq 0 (process-file "git" nil nil nil
+                                      "add" "sample.txt")))
+          (should (eq 0 (process-file
+                         "git" nil nil nil
+                         "-c" "user.name=scrollview-test"
+                         "-c" "user.email=scrollview@example.invalid"
+                         "commit" "-q" "-m" "initial")))
+          (setq buffer (find-file-noselect file))
+          (with-current-buffer buffer
+            (goto-char (point-min))
+            (forward-line 1)
+            (delete-region (line-beginning-position) (line-end-position))
+            (insert "two changed")
+            (goto-char (point-max))
+            (insert "four\n")
+            (setq scrollview--collector-cache nil)
+            (should (equal (scrollview--collect-vc-lines 'change) '(2)))
+            (should (equal (scrollview--collect-vc-lines 'add) '(4)))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer))
+      (delete-directory directory t))))
+
+(provide 'scrollview-test)
+
+;;; scrollview-test.el ends here
