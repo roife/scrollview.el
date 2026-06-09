@@ -30,9 +30,10 @@
   (setq scrollview--sign-specs (make-hash-table :test #'eql))
   (setq scrollview--window-sign-cache (make-hash-table :test #'eq))
   (setq scrollview--sign-cache-generation 0)
-  (setq scrollview--sign-render-face-cache (make-hash-table :test #'eq))
+  (setq scrollview--sign-render-face-cache (make-hash-table :test #'equal))
   (setq scrollview--thumb-face-state nil)
   (setq scrollview--diagnostic-face-state nil)
+  (setq scrollview--vc-face-state nil)
   (setq scrollview--next-sign-id 0)
   (setq scrollview--builtins-initialized nil)
   (setq scrollview--refreshing nil)
@@ -88,6 +89,11 @@
                       :underline (plist-get state :underline)
                       :inverse-video (plist-get state :inverse-video)))
 
+(ert-deftest scrollview-entry-loads-internal-modules ()
+  (dolist (feature '(scrollview scrollview-custom scrollview-faces
+                                scrollview-core scrollview-signs))
+    (should (featurep feature))))
+
 (ert-deftest scrollview-thumb-size ()
   (should (= (scrollview--compute-thumb-size 10 100) 1))
   (should (= (scrollview--compute-thumb-size 10 20) 5))
@@ -142,29 +148,38 @@
                           :background old-thumb-bg
                           :inverse-video old-thumb-inverse))))
 
-(ert-deftest scrollview-sign-render-face-preserves-background-by-default ()
-  (should (eq (scrollview--sign-render-face 'scrollview-search-face)
-              'scrollview-search-face)))
-
-(ert-deftest scrollview-sign-render-face-has-no-background-when-enabled ()
+(ert-deftest scrollview-sign-render-face-uses-automatic-backgrounds ()
   (let ((old-isearch-fg (face-attribute 'isearch :foreground nil 'default))
         (old-isearch-bg (face-attribute 'isearch :background nil 'default))
-        (scrollview-signs-no-background t))
+        (old-thumb (scrollview-test--face-state 'scrollview-thumb-face)))
     (unwind-protect
         (progn
           (set-face-attribute 'isearch nil
                               :foreground "black"
                               :background "yellow")
-          (let ((face (scrollview--sign-render-face
-                       'scrollview-search-face)))
-            (should (not (eq face 'scrollview-search-face)))
-            (should (equal (face-attribute face :foreground nil t)
+          (set-face-attribute 'scrollview-thumb-face nil
+                              :inherit nil
+                              :foreground "gray60"
+                              :background "gray60"
+                              :inverse-video nil)
+          (clrhash scrollview--sign-render-face-cache)
+          (let ((plain (scrollview--sign-render-face
+                        'scrollview-search-face nil))
+                (highlighted (scrollview--sign-render-face
+                              'scrollview-search-face t)))
+            (should (not (eq plain 'scrollview-search-face)))
+            (should (equal (face-attribute plain :foreground nil t)
                            "yellow"))
-            (should (eq (face-attribute face :background nil t)
-                        'unspecified))))
+            (should (eq (face-attribute plain :background nil t)
+                        'unspecified))
+            (should (equal (face-attribute highlighted :foreground nil t)
+                           "yellow"))
+            (should (equal (face-attribute highlighted :background nil t)
+                           "gray60"))))
       (set-face-attribute 'isearch nil
                           :foreground old-isearch-fg
-                          :background old-isearch-bg))))
+                          :background old-isearch-bg)
+      (scrollview-test--restore-face-state 'scrollview-thumb-face old-thumb))))
 
 (ert-deftest scrollview-default-startup-enables-only-search-and-diagnostics ()
   (scrollview-test--reset-state)
@@ -241,6 +256,87 @@
     (should (eq (alist-get 'add variants) 'scrollview-sign-bar-bitmap))
     (should (eq (alist-get 'change variants) 'scrollview-sign-bar-bitmap))
     (should (eq (alist-get 'delete variants) 'scrollview-sign-delete-bitmap))))
+
+(ert-deftest scrollview-vc-add-face-has-green-fallback ()
+  (scrollview-test--reset-state)
+  (let* ((faces '(diff-added diff-refine-added success scrollview-vc-add-face))
+         (states (mapcar (lambda (face)
+                           (cons face (scrollview-test--face-state face)))
+                         faces)))
+    (unwind-protect
+        (progn
+          (dolist (face '(diff-added diff-refine-added success))
+            (set-face-attribute face nil
+                                :foreground 'unspecified
+                                :underline 'unspecified
+                                :background 'unspecified))
+          (setq scrollview--vc-face-state nil)
+          (scrollview--sync-vc-faces)
+          (should (equal (face-attribute 'scrollview-vc-add-face
+                                         :foreground nil t)
+                         "green3"))
+          (should (equal (scrollview--sign-foreground
+                          'scrollview-vc-add-face)
+                         "green3")))
+      (dolist (state states)
+        (scrollview-test--restore-face-state (car state) (cdr state)))
+      (setq scrollview--vc-face-state nil)
+      (scrollview--sync-vc-faces))))
+
+(ert-deftest scrollview-vc-add-face-prefers-diff-added-color ()
+  (scrollview-test--reset-state)
+  (let* ((faces '(diff-added scrollview-vc-add-face))
+         (states (mapcar (lambda (face)
+                           (cons face (scrollview-test--face-state face)))
+                         faces)))
+    (unwind-protect
+        (progn
+          (set-face-attribute 'diff-added nil
+                              :foreground "SeaGreen3"
+                              :underline 'unspecified
+                              :background "PaleGreen")
+          (setq scrollview--vc-face-state nil)
+          (scrollview--sync-vc-faces)
+          (should (equal (face-attribute 'scrollview-vc-add-face
+                                         :foreground nil t)
+                         "SeaGreen3"))
+          (should (equal (scrollview--sign-foreground
+                          'scrollview-vc-add-face)
+                         "SeaGreen3")))
+      (dolist (state states)
+        (scrollview-test--restore-face-state (car state) (cdr state)))
+      (setq scrollview--vc-face-state nil)
+      (scrollview--sync-vc-faces))))
+
+(ert-deftest scrollview-vc-add-face-ignores-diff-added-background ()
+  (scrollview-test--reset-state)
+  (let* ((faces '(diff-added diff-refine-added success scrollview-vc-add-face))
+         (states (mapcar (lambda (face)
+                           (cons face (scrollview-test--face-state face)))
+                         faces)))
+    (unwind-protect
+        (progn
+          (dolist (face '(diff-added diff-refine-added))
+            (set-face-attribute face nil
+                                :foreground 'unspecified
+                                :underline 'unspecified
+                                :background "PaleGreen"))
+          (set-face-attribute 'success nil
+                              :foreground "green4"
+                              :underline 'unspecified
+                              :background 'unspecified)
+          (setq scrollview--vc-face-state nil)
+          (scrollview--sync-vc-faces)
+          (should (equal (face-attribute 'scrollview-vc-add-face
+                                         :foreground nil t)
+                         "green4"))
+          (should (equal (scrollview--sign-foreground
+                          'scrollview-vc-add-face)
+                         "green4")))
+      (dolist (state states)
+        (scrollview-test--restore-face-state (car state) (cdr state)))
+      (setq scrollview--vc-face-state nil)
+      (scrollview--sync-vc-faces))))
 
 (ert-deftest scrollview-diagnostic-level-honors-flymake-category ()
   (let ((symbols '(scrollview-test-eglot-error
@@ -383,31 +479,59 @@
       (scrollview--sync-diagnostic-faces))))
 
 (ert-deftest scrollview-priority-conflict-resolution ()
-  (let* ((scrollview-signs-no-background t)
-         (high (scrollview--make-sign-spec
+  (let ((old-thumb (scrollview-test--face-state 'scrollview-thumb-face)))
+    (unwind-protect
+        (let* ((high (scrollview--make-sign-spec
+                      :id 1 :group 'test :variant nil :priority 10
+                      :bitmap 'scrollview-search-bitmap
+                      :face 'scrollview-search-face
+                      :collector #'ignore :current-only nil))
+               (low (scrollview--make-sign-spec
+                     :id 2 :group 'test :variant nil :priority -1
+                     :bitmap 'scrollview-sign-dot-bitmap
+                     :face 'scrollview-keyword-face
+                     :collector #'ignore :current-only nil))
+               (info '(:window-lines 5 :buffer-lines 5
+                       :thumb-top 0 :thumb-size 5 :restricted nil))
+               slots)
+          (set-face-attribute 'scrollview-thumb-face nil
+                              :inherit nil
+                              :foreground "gray60"
+                              :background "gray60"
+                              :inverse-video nil)
+          (clrhash scrollview--sign-render-face-cache)
+          (setq slots
+                (scrollview--build-slots
+                 nil info
+                 (list (list :line 3 :spec high)
+                       (list :line 4 :spec low))))
+          (should (eq (plist-get (aref slots 0) :type) 'scrollbar))
+          (should (eq (plist-get (aref slots 2) :type) 'sign))
+          (should (plist-get (aref slots 2) :highlighted))
+          (should (eq (plist-get (aref slots 2) :bitmap)
+                      'scrollview-search-bitmap))
+          (should (equal (face-attribute (plist-get (aref slots 2) :face)
+                                         :background nil t)
+                         "gray60"))
+          (should (eq (plist-get (aref slots 3) :type) 'scrollbar)))
+      (scrollview-test--restore-face-state 'scrollview-thumb-face old-thumb))))
+
+(ert-deftest scrollview-sign-outside-scrollbar-has-no-background ()
+  (let* ((spec (scrollview--make-sign-spec
                 :id 1 :group 'test :variant nil :priority 10
                 :bitmap 'scrollview-search-bitmap
                 :face 'scrollview-search-face
                 :collector #'ignore :current-only nil))
-         (low (scrollview--make-sign-spec
-               :id 2 :group 'test :variant nil :priority -1
-               :bitmap 'scrollview-sign-dot-bitmap
-               :face 'scrollview-keyword-face
-               :collector #'ignore :current-only nil))
          (info '(:window-lines 5 :buffer-lines 5
-                 :thumb-top 0 :thumb-size 5 :restricted nil))
+                 :thumb-top 0 :thumb-size 1 :restricted nil))
          (slots (scrollview--build-slots
                  nil info
-                 (list (list :line 3 :spec high)
-                       (list :line 4 :spec low)))))
-    (should (eq (plist-get (aref slots 0) :type) 'scrollbar))
-    (should (eq (plist-get (aref slots 2) :type) 'sign))
-    (should (eq (plist-get (aref slots 2) :bitmap)
-                'scrollview-search-bitmap))
-    (should (eq (face-attribute (plist-get (aref slots 2) :face)
+                 (list (list :line 5 :spec spec)))))
+    (should (eq (plist-get (aref slots 4) :type) 'sign))
+    (should-not (plist-get (aref slots 4) :highlighted))
+    (should (eq (face-attribute (plist-get (aref slots 4) :face)
                                 :background nil t)
-                'unspecified))
-    (should (eq (plist-get (aref slots 3) :type) 'scrollbar))))
+                'unspecified))))
 
 (ert-deftest scrollview-refresh-renders-fringe-overlays ()
   (scrollview-test--reset-state)
@@ -467,33 +591,41 @@
   (scrollview-test--with-displayed-buffer
     (scrollview-test--insert-lines 200)
     (goto-char (point-min))
-    (let ((scrollview-visibility 'overflow)
-          (scrollview-signs-on-startup nil)
-          (scrollview-signs-no-background t)
-          (scrollview-line-limit -1)
-          (scrollview-byte-limit -1))
-      (cl-letf (((symbol-function 'scrollview--fringe-available-p)
-                 (lambda (_window) t)))
-        (scrollview-register-sign-group 'scrollview-test-render t)
-        (scrollview-register-sign-spec
-         :group 'scrollview-test-render
-         :variant 'mock
-         :priority 80
-         :bitmap 'scrollview-search-bitmap
-         :face 'scrollview-search-face
-         :collector (lambda (_window) '(1)))
-        (scrollview-mode 1)
-        (scrollview-refresh (selected-window))
-        (let ((displays (scrollview-test--overlay-displays
-                         (selected-window))))
-          (should (cl-find-if
-                   (lambda (display)
-                     (and (eq (car display) 'right-fringe)
-                          (eq (cadr display) 'scrollview-search-bitmap)
-                          (eq (face-attribute (caddr display)
-                                              :background nil t)
-                              'unspecified)))
-                   displays)))))))
+    (let ((old-region-bg (face-attribute 'region :background nil 'default))
+          (old-thumb (scrollview-test--face-state 'scrollview-thumb-face)))
+      (unwind-protect
+          (let ((scrollview-visibility 'overflow)
+                (scrollview-signs-on-startup nil)
+                (scrollview-line-limit -1)
+                (scrollview-byte-limit -1))
+            (set-face-attribute 'region nil :background "gray60")
+            (setq scrollview--thumb-face-state nil)
+            (clrhash scrollview--sign-render-face-cache)
+            (cl-letf (((symbol-function 'scrollview--fringe-available-p)
+                       (lambda (_window) t)))
+              (scrollview-register-sign-group 'scrollview-test-render t)
+              (scrollview-register-sign-spec
+               :group 'scrollview-test-render
+               :variant 'mock
+               :priority 80
+               :bitmap 'scrollview-search-bitmap
+               :face 'scrollview-search-face
+               :collector (lambda (_window) '(1)))
+              (scrollview-mode 1)
+              (scrollview-refresh (selected-window))
+              (let ((displays (scrollview-test--overlay-displays
+                               (selected-window))))
+                (should (cl-find-if
+                         (lambda (display)
+                           (and (eq (car display) 'right-fringe)
+                                (eq (cadr display) 'scrollview-search-bitmap)
+                                (equal (face-attribute (caddr display)
+                                                       :background nil t)
+                                       "gray60")))
+                         displays)))))
+        (set-face-attribute 'region nil :background old-region-bg)
+        (scrollview-test--restore-face-state 'scrollview-thumb-face
+                                             old-thumb)))))
 
 (ert-deftest scrollview-scroll-hook-refreshes-immediately ()
   (scrollview-test--reset-state)

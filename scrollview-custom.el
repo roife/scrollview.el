@@ -1,0 +1,114 @@
+;;; scrollview-custom.el --- Customization for scrollview -*- lexical-binding: t; -*-
+
+;; Copyright (C) 2026
+
+;; This file is not part of GNU Emacs.
+
+;;; Commentary:
+
+;; Internal module for scrollview.el.
+
+;;; Code:
+
+;;; Customization
+
+(defgroup scrollview nil
+  "Fringe scrollbars and document signs."
+  :group 'convenience
+  :prefix "scrollview-")
+
+(defcustom scrollview-side 'right
+  "Fringe side used by scrollview.
+The value must be either `right' or `left'."
+  :type '(choice (const :tag "Right fringe" right)
+                 (const :tag "Left fringe" left))
+  :group 'scrollview)
+
+(defcustom scrollview-visibility 'overflow
+  "When scrollview overlays should be shown.
+`overflow' shows scrollview only when the buffer is not fully visible.
+`always' shows it whenever the window is eligible.
+`info' shows it when the buffer overflows, or when signs are present."
+  :type '(choice (const :tag "Overflow" overflow)
+                 (const :tag "Always" always)
+                 (const :tag "Info" info))
+  :group 'scrollview)
+
+(defcustom scrollview-current-window-only nil
+  "When non-nil, show scrollview only in the selected window."
+  :type 'boolean
+  :group 'scrollview)
+
+(defcustom scrollview-excluded-modes '(image-mode doc-view-mode pdf-view-mode)
+  "Major modes where scrollview should not be displayed.
+Derived modes are excluded as well."
+  :type '(repeat symbol)
+  :group 'scrollview)
+
+(defcustom scrollview-line-limit 20000
+  "Maximum buffer line count before restricted mode is used.
+Set to -1 to disable this limit.  Restricted mode disables signs."
+  :type 'integer
+  :group 'scrollview)
+
+(defcustom scrollview-byte-limit 1000000
+  "Maximum buffer size before restricted mode is used.
+Set to -1 to disable this limit.  Restricted mode disables signs."
+  :type 'integer
+  :group 'scrollview)
+
+(defcustom scrollview-signs-on-startup '(search diagnostics)
+  "Built-in sign groups enabled when scrollview is first used.
+Use the symbol `all' to enable all built-in groups."
+  :type '(repeat symbol)
+  :group 'scrollview)
+
+(defcustom scrollview-refresh-delay 0.03
+  "Idle delay, in seconds, before a scheduled refresh runs."
+  :type 'number
+  :group 'scrollview)
+
+(defcustom scrollview-scrollbar-priority 0
+  "Priority of the scrollbar when it conflicts with signs.
+Higher priority signs replace the scrollbar for that fringe row."
+  :type 'integer
+  :group 'scrollview)
+
+(defcustom scrollview-overlay-priority 1000
+  "Overlay priority used for scrollview fringe indicators."
+  :type 'integer
+  :group 'scrollview)
+
+(defcustom scrollview-wrap-navigation t
+  "When non-nil, sign navigation wraps around buffer ends."
+  :type 'boolean
+  :group 'scrollview)
+
+(defcustom scrollview-signs-no-background nil
+  "Compatibility option for older scrollview sign rendering.
+This option is ignored.  Signs now render without a background unless they
+overlap the scrollbar thumb, in which case they use the thumb background."
+  :type 'boolean
+  :group 'scrollview)
+
+(defcustom scrollview-keyword-patterns
+  '((todo . ("\\<TODO\\>"))
+    (fixme . ("\\<FIXME\\>" "\\<BUG\\>"))
+    (hack . ("\\<HACK\\>" "\\<XXX\\>"))
+    (note . ("\\<NOTE\\>")))
+  "Keyword sign patterns.
+Each entry is (VARIANT . REGEXPS).  Patterns are Emacs regular expressions
+searched in the current buffer when the `keywords' sign group is enabled."
+  :type '(alist :key-type symbol :value-type (repeat regexp))
+  :group 'scrollview)
+
+(defcustom scrollview-keywords-comments-only nil
+  "When non-nil, show keyword signs only for matches inside comments."
+  :type 'boolean
+  :group 'scrollview)
+
+
+
+(provide 'scrollview-custom)
+
+;;; scrollview-custom.el ends here

@@ -12,7 +12,7 @@ child frames.
 
 ## Installation
 
-Place `scrollview.el` on your `load-path`, then enable it:
+Place the `scrollview.el` directory on your `load-path`, then enable it:
 
 ```elisp
 (add-to-list 'load-path "/path/to/scrollview.el")
@@ -26,6 +26,14 @@ For a single buffer:
 (scrollview-mode 1)
 ```
 
+The package is split into small internal modules:
+
+- `scrollview-custom.el`: user options
+- `scrollview-faces.el`: faces, fringe bitmaps, and sign render faces
+- `scrollview-core.el`: sign registry, rendering, scheduling, navigation, modes
+- `scrollview-signs.el`: built-in sign collectors and their update hooks
+- `scrollview.el`: public entry point
+
 ## Configuration
 
 ```elisp
@@ -33,7 +41,6 @@ For a single buffer:
 (setq scrollview-visibility 'overflow)     ; overflow, always, info
 (setq scrollview-current-window-only nil)
 (setq scrollview-signs-on-startup '(search diagnostics))
-(setq scrollview-signs-no-background nil)
 (setq scrollview-keywords-comments-only nil)
 ```
 
@@ -92,10 +99,9 @@ Built-in sign shapes:
 
 When signs and the scrollbar map to the same fringe row, the item with higher
 priority wins.  The v1 renderer uses one fringe slot per row.
-Signs render with their face background by default.  Set
-`scrollview-signs-no-background' to non-nil to render signs without painting a
-background; highlight-style faces then use their original background color as
-the sign foreground.
+Signs render without a background when they do not overlap the scrollbar
+thumb.  When a sign replaces the scrollbar thumb on the same row, it uses the
+thumb background so the scrollbar remains visually continuous.
 
 ## Sign Extension Example
 
@@ -133,7 +139,9 @@ the sign foreground.
 
 ```sh
 /Applications/Emacs.2026-04-18.8f53537.emacs-30.macOS-26.arm64/Emacs.app/Contents/MacOS/Emacs \
-  -Q --batch -L . -f batch-byte-compile scrollview.el
+  -Q --batch -L . -f batch-byte-compile \
+  scrollview-custom.el scrollview-faces.el scrollview-core.el \
+  scrollview-signs.el scrollview.el
 
 /Applications/Emacs.2026-04-18.8f53537.emacs-30.macOS-26.arm64/Emacs.app/Contents/MacOS/Emacs \
   -Q --batch -L . -l test/scrollview-test.el -f ert-run-tests-batch-and-exit
