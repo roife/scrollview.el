@@ -84,13 +84,6 @@ Higher priority signs replace the scrollbar for that fringe row."
   :type 'boolean
   :group 'scrollview)
 
-(defcustom scrollview-signs-no-background nil
-  "Compatibility option for older scrollview sign rendering.
-This option is ignored.  Signs now render without a background unless they
-overlap the scrollbar thumb, in which case they use the thumb background."
-  :type 'boolean
-  :group 'scrollview)
-
 
 
 (provide 'scrollview-custom)
