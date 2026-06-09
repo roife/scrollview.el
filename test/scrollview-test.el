@@ -144,6 +144,19 @@
   (should (= (scrollview--line-to-row 100 10 100) 9))
   (should (= (scrollview--line-to-row 200 10 100) 9)))
 
+(ert-deftest scrollview-position-info-clamps-track-at-eob ()
+  (scrollview-test--with-displayed-buffer
+    (scrollview-test--insert-lines 200)
+    (let ((window (selected-window)))
+      (cl-letf (((symbol-function 'scrollview--window-line-height)
+                 (lambda (_window) 20))
+                ((symbol-function 'scrollview--window-top-line)
+                 (lambda (_window) 197)))
+        (let ((info (scrollview--position-info window)))
+          (should (= (plist-get info :window-lines) 20))
+          (should (= (plist-get info :track-lines) 4))
+          (should (= (plist-get info :thumb-top) 3)))))))
+
 (ert-deftest scrollview-line-count-cache-invalidates-on-edit ()
   (with-temp-buffer
     (insert "one\ntwo")
@@ -603,6 +616,14 @@
     (should (eq (face-attribute (plist-get (aref slots 4) :face)
                                 :background nil t)
                 'unspecified))))
+
+(ert-deftest scrollview-slots-avoid-eob-empty-display-rows ()
+  (let* ((info '(:window-lines 10 :track-lines 4 :buffer-lines 100
+                 :thumb-top 3 :thumb-size 1 :restricted nil))
+         (slots (scrollview--build-slots nil info nil)))
+    (should (eq (plist-get (aref slots 3) :type) 'scrollbar))
+    (cl-loop for row from 4 below (length slots)
+             do (should-not (aref slots row)))))
 
 (ert-deftest scrollview-refresh-renders-fringe-overlays ()
   (scrollview-test--reset-state)

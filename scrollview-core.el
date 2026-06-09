@@ -150,6 +150,13 @@
   (with-current-buffer (window-buffer window)
     (line-number-at-pos (window-start window) t)))
 
+(defun scrollview--window-track-lines (window top-line buffer-lines)
+  "Return drawable fringe rows for WINDOW from TOP-LINE to BUFFER-LINES.
+Rows below `point-max' are empty display area and cannot reliably host fringe
+overlays."
+  (min (scrollview--window-line-height window)
+       (max 1 (1+ (- buffer-lines top-line)))))
+
 (defun scrollview--restricted-p (&optional buffer)
   "Return non-nil when BUFFER should use restricted mode."
   (with-current-buffer (or buffer (current-buffer))
@@ -291,15 +298,18 @@ BOTTOM-VISIBLE should be non-nil when point-max is visible."
     (let* ((window-lines (scrollview--window-line-height window))
            (buffer-lines (scrollview--line-count))
            (top-line (scrollview--window-top-line window))
+           (track-lines (scrollview--window-track-lines
+                         window top-line buffer-lines))
            (bottom-line (+ top-line window-lines -1))
            (bottom-visible (>= bottom-line buffer-lines))
            (overflow (or (> top-line 1)
                          (> buffer-lines window-lines)))
-           (thumb-size (scrollview--compute-thumb-size window-lines buffer-lines))
+           (thumb-size (scrollview--compute-thumb-size track-lines buffer-lines))
            (thumb-top (scrollview--compute-thumb-top
-                       window-lines buffer-lines top-line thumb-size
+                       track-lines buffer-lines top-line thumb-size
                        bottom-visible)))
       (list :window-lines window-lines
+            :track-lines track-lines
             :buffer-lines buffer-lines
             :top-line top-line
             :bottom-visible bottom-visible
@@ -533,6 +543,7 @@ matches.  Fresh collections always update the cache."
 (defun scrollview--build-slots (_window info sign-items)
   "Return fringe slots using INFO and SIGN-ITEMS."
   (let* ((window-lines (plist-get info :window-lines))
+         (track-lines (or (plist-get info :track-lines) window-lines))
          (buffer-lines (plist-get info :buffer-lines))
          (thumb-top (plist-get info :thumb-top))
          (thumb-size (plist-get info :thumb-size))
@@ -554,7 +565,7 @@ matches.  Fresh collections always update the cache."
     (dolist (item sign-items)
       (let* ((line (plist-get item :line))
              (spec (plist-get item :spec))
-             (row (scrollview--line-to-row line window-lines buffer-lines))
+             (row (scrollview--line-to-row line track-lines buffer-lines))
              (highlighted (scrollview--thumb-row-p row thumb-top thumb-size)))
         (scrollview--put-slot
          slots row
