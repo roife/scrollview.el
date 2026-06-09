@@ -11,6 +11,7 @@
 ;;; Code:
 
 (require 'cl-lib)
+(require 'seq)
 (require 'scrollview-custom)
 (require 'scrollview-faces)
 
@@ -132,7 +133,7 @@
 
 (defun scrollview--dedupe-sorted-lines (lines)
   "Return sorted unique integer LINES."
-  (sort (delete-dups (cl-remove-if-not #'integerp (copy-sequence lines))) #'<))
+  (seq-uniq (sort (seq-filter #'integerp lines) #'<) #'=))
 
 (defun scrollview--clamp-lines (lines buffer-lines)
   "Clamp LINES to the one-based range of BUFFER-LINES."
@@ -164,12 +165,6 @@ overlays."
              (> (scrollview--line-count) scrollview-line-limit))
         (and (>= scrollview-byte-limit 0)
              (> (buffer-size) scrollview-byte-limit)))))
-
-(defun scrollview--fringe-side ()
-  "Return the display side symbol for `scrollview-side'."
-  (pcase scrollview-side
-    ('left 'left-fringe)
-    (_ 'right-fringe)))
 
 (defun scrollview--fringe-available-p (window)
   "Return non-nil if WINDOW has a usable fringe on `scrollview-side'."
@@ -372,7 +367,7 @@ ARGS is a plist accepting:
   "Deregister sign specification ID."
   (remhash id scrollview--sign-specs)
   (scrollview--invalidate-sign-cache)
-  (scrollview--schedule-refresh-all))
+  (scrollview--schedule-refresh))
 
 (defun scrollview--sign-group-list ()
   "Return registered sign groups."
@@ -381,10 +376,6 @@ ARGS is a plist accepting:
              scrollview--sign-groups)
     (sort groups (lambda (a b)
                    (string< (symbol-name a) (symbol-name b))))))
-
-(defun scrollview--builtin-sign-groups ()
-  "Return built-in sign group names."
-  '(search diagnostics conflicts keywords spell vc))
 
 (defun scrollview--startup-sign-enabled-p (group)
   "Return non-nil if GROUP should be enabled on startup."
@@ -403,7 +394,7 @@ STATE should be non-nil to enable, nil to disable, or `:toggle' to toggle."
     (unless (eq old new)
       (puthash group new scrollview--sign-groups)
       (scrollview--invalidate-sign-cache)
-      (scrollview--schedule-refresh-all))))
+      (scrollview--schedule-refresh))))
 
 ;;;###autoload
 (defun scrollview-sign-group-active-p (group)
@@ -459,12 +450,6 @@ STATE should be non-nil to enable, nil to disable, or `:toggle' to toggle."
     (when (and line (<= 1 line) (<= line buffer-lines))
       line)))
 
-(defun scrollview--group-matches-p (group groups)
-  "Return non-nil if GROUP is selected by GROUPS."
-  (or (null groups)
-      (memq 'all groups)
-      (memq group groups)))
-
 (defun scrollview--collect-sign-items (window &optional groups)
   "Collect visible sign items for WINDOW.
 GROUPS may be nil, a symbol, or a list of symbols."
@@ -481,19 +466,18 @@ GROUPS may be nil, a symbol, or a list of symbols."
        (lambda (_id spec)
          (let ((group (scrollview--sign-spec-group spec)))
            (when (and (scrollview-sign-group-active-p group)
-                      (scrollview--group-matches-p group groups)
+                      (or (null groups)
+                          (memq 'all groups)
+                          (memq group groups))
                       (or (not (scrollview--sign-spec-current-only spec))
                           (eq window (selected-window))))
              (with-current-buffer (window-buffer window)
-               (let (lines)
-                 (setq lines
-                       (ignore-errors
-                         (funcall (scrollview--sign-spec-collector spec)
-                                  window)))
-                 (dolist (line lines)
-                   (when-let ((line (scrollview--normalize-line
-                                     line buffer-lines)))
-                     (push (list :line line :spec spec) items))))))))
+               (dolist (line (ignore-errors
+                                (funcall (scrollview--sign-spec-collector spec)
+                                         window)))
+                 (when-let ((line (scrollview--normalize-line
+                                   line buffer-lines)))
+                   (push (list :line line :spec spec) items)))))))
        scrollview--sign-specs))
     (nreverse items)))
 
@@ -535,11 +519,6 @@ matches.  Fresh collections always update the cache."
     (when (scrollview--slot-better-p slot old)
       (aset slots row slot))))
 
-(defun scrollview--thumb-row-p (row thumb-top thumb-size)
-  "Return non-nil if ROW is covered by the scrollbar thumb."
-  (and (<= thumb-top row)
-       (< row (+ thumb-top thumb-size))))
-
 (defun scrollview--build-slots (_window info sign-items)
   "Return fringe slots using INFO and SIGN-ITEMS."
   (let* ((window-lines (plist-get info :window-lines))
@@ -566,7 +545,8 @@ matches.  Fresh collections always update the cache."
       (let* ((line (plist-get item :line))
              (spec (plist-get item :spec))
              (row (scrollview--line-to-row line track-lines buffer-lines))
-             (highlighted (scrollview--thumb-row-p row thumb-top thumb-size)))
+             (highlighted (and (<= thumb-top row)
+                               (< row (+ thumb-top thumb-size)))))
         (scrollview--put-slot
          slots row
          (list :type 'sign
@@ -591,7 +571,9 @@ matches.  Fresh collections always update the cache."
          (pos (if (= pos (line-end-position))
                   pos
                 (min (point-max) (1+ pos))))
-         (display `(,(scrollview--fringe-side)
+         (display `(,(if (eq scrollview-side 'left)
+                         'left-fringe
+                       'right-fringe)
                     ,(plist-get slot :bitmap)
                     ,(plist-get slot :face)))
          (string (propertize "." 'display display))
@@ -689,10 +671,6 @@ eligible windows."
           (run-with-idle-timer scrollview-refresh-delay nil
                                #'scrollview--flush-refresh))))
 
-(defun scrollview--schedule-refresh-all ()
-  "Schedule a refresh for all windows."
-  (scrollview--schedule-refresh nil))
-
 (defun scrollview--schedule-buffer-refresh (&optional buffer)
   "Schedule a refresh for windows showing BUFFER."
   (dolist (window (get-buffer-window-list (or buffer (current-buffer)) nil t))
@@ -711,11 +689,11 @@ the text for one redisplay frame before the debounced refresh corrects them."
 
 (defun scrollview--window-configuration-change ()
   "Refresh after window configuration changes."
-  (scrollview--schedule-refresh-all))
+  (scrollview--schedule-refresh))
 
 (defun scrollview--window-size-change (_frame)
   "Refresh after window size changes."
-  (scrollview--schedule-refresh-all))
+  (scrollview--schedule-refresh))
 
 (defun scrollview--post-command ()
   "Refresh when the selected window changes."
@@ -762,16 +740,16 @@ LOCATION is one of `next', `prev', `first', or `last'."
     (setq target
           (pcase location
             ('first (car lines))
-            ('last (car (last lines)))
+            ('last (seq-last lines))
             ('next (or (nth (1- count)
-                            (cl-remove-if-not
+                            (seq-filter
                              (lambda (line) (> line current)) lines))
                        (and scrollview-wrap-navigation
                             (nth (mod (1- count) (length lines)) lines))
-                       (car (last lines))))
+                       (seq-last lines)))
             ('prev (let ((previous
                           (nreverse
-                           (cl-remove-if-not
+                           (seq-filter
                             (lambda (line) (< line current)) lines))))
                      (or (nth (1- count) previous)
                          (and scrollview-wrap-navigation

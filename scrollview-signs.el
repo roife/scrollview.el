@@ -12,6 +12,7 @@
 
 (require 'cl-lib)
 (require 'isearch)
+(require 'seq)
 (require 'subr-x)
 (require 'scrollview-core)
 
@@ -39,28 +40,26 @@
 
 (defun scrollview--active-isearch-source ()
   "Return active isearch source as (PATTERN REGEXP)."
-  (when (and (bound-and-true-p isearch-mode)
-             (bound-and-true-p isearch-success)
-             (boundp 'isearch-string)
+  (when (and isearch-mode
+             isearch-success
              (stringp isearch-string)
-             (> (length isearch-string) 0))
+             (not (string-empty-p isearch-string)))
     (list isearch-string
-          (and (boundp 'isearch-regexp) isearch-regexp))))
+          isearch-regexp)))
 
 (defun scrollview--lazy-highlight-active-p (&optional buffer)
   "Return non-nil if BUFFER still has live isearch lazy highlight overlays."
   (let ((buffer (or buffer (current-buffer))))
-    (and (boundp 'isearch-lazy-highlight-overlays)
-         (cl-some (lambda (overlay)
-                    (and (overlayp overlay)
-                         (eq (overlay-buffer overlay) buffer)))
-                  isearch-lazy-highlight-overlays))))
+    (cl-some (lambda (overlay)
+               (and (overlayp overlay)
+                    (eq (overlay-buffer overlay) buffer)))
+             isearch-lazy-highlight-overlays)))
 
 (defun scrollview--retained-isearch-source ()
   "Return retained isearch source as (PATTERN REGEXP)."
   (when (and (not (bound-and-true-p isearch-mode))
              (stringp scrollview--last-search-pattern)
-             (> (length scrollview--last-search-pattern) 0)
+             (not (string-empty-p scrollview--last-search-pattern))
              (scrollview--lazy-highlight-active-p))
     (list scrollview--last-search-pattern scrollview--last-search-regexp)))
 
@@ -167,38 +166,6 @@ literally with `search-forward'."
        (t 'info)))
      (t 'info))))
 
-(defun scrollview--flymake-diagnostic-lines (level)
-  "Collect Flymake diagnostic lines for LEVEL."
-  (when (fboundp 'flymake-diagnostics)
-    (let (lines)
-      (ignore-errors
-        (dolist (diag (flymake-diagnostics (point-min) (point-max)))
-          (when (eq (scrollview--diagnostic-level
-                     (flymake-diagnostic-type diag))
-                    level)
-            (push (line-number-at-pos (flymake-diagnostic-beg diag) t)
-                  lines))))
-      lines)))
-
-(defun scrollview--flycheck-diagnostic-lines (level)
-  "Collect Flycheck diagnostic lines for LEVEL."
-  (when (and (boundp 'flycheck-current-errors)
-             (fboundp 'flycheck-error-line)
-             (fboundp 'flycheck-error-level))
-    (let (lines)
-      (ignore-errors
-        (dolist (err (symbol-value 'flycheck-current-errors))
-          (when (eq (scrollview--diagnostic-level
-                     (flycheck-error-level err))
-                    level)
-            (when-let ((line (flycheck-error-line err)))
-              (push line lines)))))
-      lines)))
-
-(defun scrollview--empty-diagnostic-lines ()
-  "Return an empty diagnostic line plist."
-  (list :error nil :warning nil :info nil))
-
 (defun scrollview--diagnostic-lines ()
   "Collect diagnostic lines from Flymake and Flycheck in one pass."
   (scrollview--cached-collector-value
@@ -209,7 +176,7 @@ literally with `search-forward'."
                         (symbol-value 'flycheck-current-errors)))
    (lambda ()
      (let ((buffer-lines (scrollview--line-count))
-           (result (scrollview--empty-diagnostic-lines)))
+           (result (list :error nil :warning nil :info nil)))
        (when (fboundp 'flymake-diagnostics)
          (ignore-errors
            (dolist (diag (flymake-diagnostics (point-min) (point-max)))
@@ -238,7 +205,7 @@ literally with `search-forward'."
              :info (scrollview--clamp-lines
                     (plist-get result :info) buffer-lines))))))
 
-(defun scrollview--collect-diagnostic-lines (level)
+(defun scrollview--collect-diagnostic-lines (level &rest _)
   "Collect diagnostic lines for LEVEL from Flymake and loaded Flycheck."
   (plist-get (scrollview--diagnostic-lines)
              (scrollview--variant-key level)))
@@ -263,7 +230,7 @@ literally with `search-forward'."
              :middle (scrollview--dedupe-sorted-lines middle)
              :bottom (scrollview--dedupe-sorted-lines bottom))))))
 
-(defun scrollview--collect-conflict-lines (variant)
+(defun scrollview--collect-conflict-lines (variant &rest _)
   "Collect conflict marker lines for VARIANT."
   (plist-get (scrollview--conflict-lines)
              (scrollview--variant-key variant)))
@@ -309,17 +276,13 @@ literally with `search-forward'."
                                   match))
            return (scrollview--hl-todo-keyword-variant keyword)))
 
-(defun scrollview--hl-todo-token ()
-  "Return a cache token for hl-todo keyword signs."
-  (list :tick (buffer-chars-modified-tick)
-        :keyword-faces (and (boundp 'hl-todo-keyword-faces)
-                            hl-todo-keyword-faces)))
-
 (defun scrollview--hl-todo-lines ()
   "Return hl-todo keyword lines grouped by variant."
   (scrollview--cached-collector-value
    'keywords
-   (scrollview--hl-todo-token)
+   (list :tick (buffer-chars-modified-tick)
+         :keyword-faces (and (boundp 'hl-todo-keyword-faces)
+                             hl-todo-keyword-faces))
    (lambda ()
      (let (lines)
        (when (scrollview--hl-todo-available-p)
@@ -340,15 +303,9 @@ literally with `search-forward'."
                        (scrollview--dedupe-sorted-lines (cdr entry))))
                lines)))))
 
-(defun scrollview--collect-keyword-lines (variant)
+(defun scrollview--collect-keyword-lines (variant &rest _)
   "Collect keyword lines for VARIANT."
   (cdr (assq variant (scrollview--hl-todo-lines))))
-
-(defun scrollview--marker-position-live-p (marker)
-  "Return non-nil when MARKER still points into the current buffer."
-  (and (markerp marker)
-       (eq (marker-buffer marker) (current-buffer))
-       (marker-position marker)))
 
 (defun scrollview--ispell-note-update ()
   "Invalidate spell signs after an Ispell result change."
@@ -362,7 +319,8 @@ literally with `search-forward'."
   (let ((line (line-number-at-pos position t))
         changed)
     (dolist (marker scrollview--ispell-misspelling-markers)
-      (unless (and (scrollview--marker-position-live-p marker)
+      (unless (and (eq (marker-buffer marker) (current-buffer))
+                   (marker-position marker)
                    (= (line-number-at-pos marker t) line))
         (push marker changed)))
     (unless (= (length changed)
@@ -378,9 +336,11 @@ literally with `search-forward'."
   "Forget recorded Ispell misspellings between BEG and END."
   (let (kept changed)
     (dolist (marker scrollview--ispell-misspelling-markers)
-      (if (and (scrollview--marker-position-live-p marker)
-               (<= beg (marker-position marker))
-               (< (marker-position marker) end))
+      (if (and (eq (marker-buffer marker) (current-buffer))
+               (let ((position (marker-position marker)))
+                 (and position
+                      (<= beg position)
+                      (< position end))))
           (progn
             (setq changed t)
             (set-marker marker nil))
@@ -404,8 +364,10 @@ literally with `search-forward'."
          :generation scrollview--spell-state-generation)
    (lambda ()
      (setq scrollview--ispell-misspelling-markers
-           (cl-remove-if-not #'scrollview--marker-position-live-p
-                             scrollview--ispell-misspelling-markers))
+           (seq-filter (lambda (marker)
+                         (and (eq (marker-buffer marker) (current-buffer))
+                              (marker-position marker)))
+                       scrollview--ispell-misspelling-markers))
      (scrollview--dedupe-sorted-lines
       (mapcar (lambda (marker)
                 (line-number-at-pos marker t))
@@ -437,14 +399,6 @@ literally with `search-forward'."
       (cl-loop for (_ . value) in (ignore-errors (diff-hl-changes))
                append (scrollview--diff-hl-change-value value)))))
 
-(defun scrollview--vc-add-line-range (result key start count)
-  "Add COUNT lines starting at START to RESULT under KEY."
-  (let ((count (max 1 count)))
-    (dotimes (offset count)
-      (plist-put result key
-                 (cons (+ start offset) (plist-get result key)))))
-  result)
-
 (defun scrollview--vc-lines ()
   "Return VC sign lines reported by diff-hl."
   (scrollview--cached-collector-value
@@ -461,19 +415,18 @@ literally with `search-forward'."
            (result (list :add nil :change nil :delete nil)))
        (dolist (hunk (scrollview--diff-hl-hunks))
          (pcase-let ((`(,line ,inserts ,_deletes ,type) hunk))
-           (pcase type
-             ('insert
-              (setq result
-                    (scrollview--vc-add-line-range
-                     result :add line inserts)))
-             ('change
-              (setq result
-                    (scrollview--vc-add-line-range
-                     result :change line inserts)))
-             ('delete
-              (setq result
-                    (scrollview--vc-add-line-range
-                     result :delete line 1))))))
+           (when-let ((key (pcase type
+                              ('insert :add)
+                              ('change :change)
+                              ('delete :delete))))
+             (plist-put result key
+                        (nconc (number-sequence
+                                line (+ line (max 1
+                                                  (if (eq type 'delete)
+                                                      1
+                                                    inserts))
+                                        -1))
+                               (plist-get result key))))))
        (list :add (scrollview--clamp-lines
                    (plist-get result :add) buffer-lines)
              :change (scrollview--clamp-lines
@@ -481,7 +434,7 @@ literally with `search-forward'."
              :delete (scrollview--clamp-lines
                       (plist-get result :delete) buffer-lines))))))
 
-(defun scrollview--collect-vc-lines (variant)
+(defun scrollview--collect-vc-lines (variant &rest _)
   "Collect VC sign lines for VARIANT."
   (plist-get (scrollview--vc-lines)
              (scrollview--variant-key variant)))
@@ -489,11 +442,6 @@ literally with `search-forward'."
 (defun scrollview--variant-key (variant)
   "Return plist keyword for VARIANT."
   (intern (format ":%s" variant)))
-
-(defun scrollview--variant-collector (collector variant)
-  "Return a window collector that calls COLLECTOR with VARIANT."
-  (lambda (_window)
-    (funcall collector variant)))
 
 (defun scrollview--register-builtin-sign-group (group specs)
   "Register built-in sign GROUP and its SPECS.
@@ -510,19 +458,19 @@ Each element of SPECS is a plist passed to `scrollview-register-sign-spec'."
          :priority 60
          :bitmap 'scrollview-diagnostic-bitmap
          :face 'scrollview-diagnostic-error-face
-         :collector (scrollview--variant-collector
+         :collector (apply-partially
                      #'scrollview--collect-diagnostic-lines 'error))
    (list :variant 'warning
          :priority 50
          :bitmap 'scrollview-diagnostic-bitmap
          :face 'scrollview-diagnostic-warning-face
-         :collector (scrollview--variant-collector
+         :collector (apply-partially
                      #'scrollview--collect-diagnostic-lines 'warning))
    (list :variant 'info
          :priority 40
          :bitmap 'scrollview-diagnostic-bitmap
          :face 'scrollview-diagnostic-info-face
-         :collector (scrollview--variant-collector
+         :collector (apply-partially
                      #'scrollview--collect-diagnostic-lines 'info))))
 
 (defun scrollview--conflict-sign-specs ()
@@ -532,19 +480,19 @@ Each element of SPECS is a plist passed to `scrollview-register-sign-spec'."
          :priority 80
          :bitmap 'scrollview-sign-dot-bitmap
          :face 'scrollview-conflict-top-face
-         :collector (scrollview--variant-collector
+         :collector (apply-partially
                      #'scrollview--collect-conflict-lines 'top))
    (list :variant 'middle
          :priority 80
          :bitmap 'scrollview-sign-dot-bitmap
          :face 'scrollview-conflict-middle-face
-         :collector (scrollview--variant-collector
+         :collector (apply-partially
                      #'scrollview--collect-conflict-lines 'middle))
    (list :variant 'bottom
          :priority 80
          :bitmap 'scrollview-sign-dot-bitmap
          :face 'scrollview-conflict-bottom-face
-         :collector (scrollview--variant-collector
+         :collector (apply-partially
                      #'scrollview--collect-conflict-lines 'bottom))))
 
 (defun scrollview--keyword-sign-specs ()
@@ -560,7 +508,7 @@ Each element of SPECS is a plist passed to `scrollview-register-sign-spec'."
                         :priority (scrollview--keyword-priority variant)
                         :bitmap (scrollview--keyword-bitmap variant)
                         :face (scrollview--keyword-face variant)
-                        :collector (scrollview--variant-collector
+                        :collector (apply-partially
                                     #'scrollview--collect-keyword-lines
                                     variant))
                   specs))))
@@ -573,19 +521,19 @@ Each element of SPECS is a plist passed to `scrollview-register-sign-spec'."
          :priority 30
          :bitmap 'scrollview-sign-bar-bitmap
          :face 'scrollview-vc-add-face
-         :collector (scrollview--variant-collector
+         :collector (apply-partially
                      #'scrollview--collect-vc-lines 'add))
    (list :variant 'change
          :priority 30
          :bitmap 'scrollview-sign-bar-bitmap
          :face 'scrollview-vc-change-face
-         :collector (scrollview--variant-collector
+         :collector (apply-partially
                      #'scrollview--collect-vc-lines 'change))
    (list :variant 'delete
          :priority 30
          :bitmap 'scrollview-sign-delete-bitmap
          :face 'scrollview-vc-delete-face
-         :collector (scrollview--variant-collector
+         :collector (apply-partially
                      #'scrollview--collect-vc-lines 'delete))))
 
 (defun scrollview--initialize-builtins ()
