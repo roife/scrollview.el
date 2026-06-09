@@ -91,22 +91,6 @@ overlap the scrollbar thumb, in which case they use the thumb background."
   :type 'boolean
   :group 'scrollview)
 
-(defcustom scrollview-keyword-patterns
-  '((todo . ("\\<TODO\\>"))
-    (fixme . ("\\<FIXME\\>" "\\<BUG\\>"))
-    (hack . ("\\<HACK\\>" "\\<XXX\\>"))
-    (note . ("\\<NOTE\\>")))
-  "Keyword sign patterns.
-Each entry is (VARIANT . REGEXPS).  Patterns are Emacs regular expressions
-searched in the current buffer when the `keywords' sign group is enabled."
-  :type '(alist :key-type symbol :value-type (repeat regexp))
-  :group 'scrollview)
-
-(defcustom scrollview-keywords-comments-only nil
-  "When non-nil, show keyword signs only for matches inside comments."
-  :type 'boolean
-  :group 'scrollview)
-
 
 
 (provide 'scrollview-custom)

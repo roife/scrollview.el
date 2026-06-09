@@ -31,7 +31,7 @@ scrollview is loaded and after themes are enabled."
   :group 'scrollview)
 
 (defface scrollview-search-face
-  '((t (:inherit isearch)))
+  '((t (:inherit font-lock-function-name-face)))
   "Face for search signs."
   :group 'scrollview)
 
@@ -194,12 +194,19 @@ The foreground is synchronized from diff faces, with an error fallback."
   "Return the best available color for the current selection."
   (cl-labels ((color (face attribute)
                 (let ((value (face-attribute face attribute nil t)))
-                  (unless (memq value '(nil unspecified))
+                  (when (scrollview--usable-color-p value)
                     value))))
     (or (color 'region :background)
         (color 'highlight :background)
         (color 'region :foreground)
         (color 'highlight :foreground))))
+
+(defun scrollview--usable-color-p (color)
+  "Return non-nil if COLOR is suitable for a fringe face."
+  (and color
+       (not (eq color 'unspecified))
+       (not (and (stringp color)
+                 (string-prefix-p "unspecified-" color)))))
 
 (defun scrollview--sync-thumb-face (&rest _)
   "Synchronize the scrollbar thumb with the current selection color."
@@ -227,7 +234,7 @@ The foreground is synchronized from diff faces, with an error fallback."
   (when (facep face)
     (cl-loop for attribute in attributes
              for value = (face-attribute face attribute nil t)
-             when (and value (not (eq value 'unspecified)))
+             when (scrollview--usable-color-p value)
              return value)))
 
 (defun scrollview--face-direct-color (face attributes)
@@ -235,7 +242,7 @@ The foreground is synchronized from diff faces, with an error fallback."
   (when (facep face)
     (cl-loop for attribute in attributes
              for value = (face-attribute face attribute nil nil)
-             when (and value (not (eq value 'unspecified)))
+             when (scrollview--usable-color-p value)
              return value)))
 
 (defun scrollview--face-underline-color (face)
@@ -354,7 +361,9 @@ Highlight-style faces often carry their visible color in the background, so
 explicit sign colors are preferred before inherited highlight backgrounds."
   (or (scrollview--face-direct-color face '(:foreground :background))
       (scrollview--face-color face '(:background :foreground))
-      (face-foreground 'default nil t)
+      (let ((foreground (face-foreground 'default nil t)))
+        (when (scrollview--usable-color-p foreground)
+          foreground))
       "black"))
 
 (defun scrollview--thumb-background ()

@@ -18,6 +18,22 @@
 (declare-function flymake-diagnostics "flymake" (&optional beg end))
 (declare-function flymake-diagnostic-beg "flymake" (diag))
 (declare-function flymake-diagnostic-type "flymake" (diag))
+(declare-function smerge-find-conflict "smerge-mode" (&optional limit))
+(declare-function hl-todo--search "hl-todo" (&optional regexp bound backward))
+(declare-function diff-hl-changes "diff-hl" ())
+(declare-function diff-hl-changes-from-buffer "diff-hl" (buf))
+
+(defvar hl-todo-keyword-faces)
+(defvar diff-hl-reference-revision)
+(defvar diff-hl-show-staged-changes)
+(defvar diff-hl-update-async)
+(defvar ispell-quit)
+
+(defvar-local scrollview--ispell-misspelling-markers nil
+  "Markers for misspellings reported by Ispell in the current buffer.")
+
+(defvar-local scrollview--vc-state-generation 0
+  "Buffer-local generation incremented after diff-hl updates.")
 
 ;;; Built-in sign collectors
 
@@ -179,36 +195,73 @@ literally with `search-forward'."
               (push line lines)))))
       lines)))
 
+(defun scrollview--empty-diagnostic-lines ()
+  "Return an empty diagnostic line plist."
+  (list :error nil :warning nil :info nil))
+
+(defun scrollview--diagnostic-lines ()
+  "Collect diagnostic lines from Flymake and Flycheck in one pass."
+  (scrollview--cached-collector-value
+   'diagnostics
+   (list :tick (buffer-chars-modified-tick)
+         :generation scrollview--diagnostic-state-generation
+         :flycheck (and (boundp 'flycheck-current-errors)
+                        (symbol-value 'flycheck-current-errors)))
+   (lambda ()
+     (let ((buffer-lines (scrollview--line-count))
+           (result (scrollview--empty-diagnostic-lines)))
+       (when (fboundp 'flymake-diagnostics)
+         (ignore-errors
+           (dolist (diag (flymake-diagnostics (point-min) (point-max)))
+             (let ((level (scrollview--diagnostic-level
+                           (flymake-diagnostic-type diag))))
+               (let ((key (scrollview--variant-key level)))
+                 (plist-put result key
+                            (cons (line-number-at-pos
+                                   (flymake-diagnostic-beg diag) t)
+                                  (plist-get result key))))))))
+       (when (and (boundp 'flycheck-current-errors)
+                  (fboundp 'flycheck-error-line)
+                  (fboundp 'flycheck-error-level))
+         (ignore-errors
+           (dolist (err (symbol-value 'flycheck-current-errors))
+             (let ((level (scrollview--diagnostic-level
+                           (flycheck-error-level err))))
+               (when-let ((line (flycheck-error-line err)))
+                 (let ((key (scrollview--variant-key level)))
+                   (plist-put result key
+                              (cons line (plist-get result key)))))))))
+       (list :error (scrollview--clamp-lines
+                     (plist-get result :error) buffer-lines)
+             :warning (scrollview--clamp-lines
+                       (plist-get result :warning) buffer-lines)
+             :info (scrollview--clamp-lines
+                    (plist-get result :info) buffer-lines))))))
+
 (defun scrollview--collect-diagnostic-lines (level)
   "Collect diagnostic lines for LEVEL from Flymake and loaded Flycheck."
-  (scrollview--clamp-lines
-   (append (scrollview--flymake-diagnostic-lines level)
-           (scrollview--flycheck-diagnostic-lines level))
-   (scrollview--line-count)))
+  (plist-get (scrollview--diagnostic-lines)
+             (scrollview--variant-key level)))
 
 (defun scrollview--conflict-lines ()
-  "Return merge conflict marker lines as a plist."
+  "Return smerge conflict marker lines as a plist."
   (scrollview--cached-collector-value
    'conflicts
    (list :tick (buffer-chars-modified-tick))
    (lambda ()
-     (let ((line 1)
-           top middle bottom)
-       (save-excursion
-         (goto-char (point-min))
-         (while (not (eobp))
-           (cond
-            ((looking-at-p "^<<<<<<< ")
-             (push line top))
-            ((looking-at-p "^=======$")
-             (push line middle))
-            ((looking-at-p "^>>>>>>> ")
-             (push line bottom)))
-           (setq line (1+ line))
-           (forward-line 1)))
-       (list :top (nreverse top)
-             :middle (nreverse middle)
-             :bottom (nreverse bottom))))))
+     (let (top middle bottom)
+       (when (require 'smerge-mode nil t)
+         (save-excursion
+           (save-match-data
+             (goto-char (point-min))
+             (while (ignore-errors (smerge-find-conflict nil))
+               (push (line-number-at-pos (match-beginning 0) t) top)
+               (when (match-beginning 5)
+                 (push (line-number-at-pos (match-beginning 5) t) middle))
+               (push (line-number-at-pos (match-end 3) t) bottom)))))
+       (list :top (scrollview--dedupe-sorted-lines top)
+             :middle (scrollview--dedupe-sorted-lines middle)
+             :bottom (scrollview--dedupe-sorted-lines bottom))))))
 
 (defun scrollview--collect-conflict-lines (variant)
   "Collect conflict marker lines for VARIANT."
@@ -233,238 +286,200 @@ literally with `search-forward'."
     ('note 35)
     (_ 45)))
 
-(defun scrollview--match-in-comment-p (position)
-  "Return non-nil if POSITION is inside a comment."
-  (save-excursion
-    (goto-char position)
-    (nth 4 (syntax-ppss))))
+(defun scrollview--hl-todo-available-p ()
+  "Return non-nil when hl-todo can provide keyword matching."
+  (require 'hl-todo nil t))
 
-(defun scrollview--keyword-lines (variant patterns)
-  "Return lines matching keyword VARIANT PATTERNS."
+(defun scrollview--hl-todo-keyword-variant (keyword)
+  "Return a sign variant symbol for hl-todo KEYWORD."
+  (let ((name (downcase
+               (string-trim
+                (replace-regexp-in-string "[^[:alnum:]]+" "-" keyword)
+                "-" "-"))))
+    (if (string-empty-p name)
+        'keyword
+      (intern name))))
+
+(defun scrollview--hl-todo-match-variant (match)
+  "Return the hl-todo variant whose configured keyword matches MATCH."
+  (cl-loop for (keyword . _) in (and (boundp 'hl-todo-keyword-faces)
+                                     hl-todo-keyword-faces)
+           when (ignore-errors
+                  (string-match-p (concat "\\`\\(?:" keyword "\\)\\'")
+                                  match))
+           return (scrollview--hl-todo-keyword-variant keyword)))
+
+(defun scrollview--hl-todo-token ()
+  "Return a cache token for hl-todo keyword signs."
+  (list :tick (buffer-chars-modified-tick)
+        :keyword-faces (and (boundp 'hl-todo-keyword-faces)
+                            hl-todo-keyword-faces)))
+
+(defun scrollview--hl-todo-lines ()
+  "Return hl-todo keyword lines grouped by variant."
   (scrollview--cached-collector-value
-   (list 'keywords variant)
-   (list :tick (buffer-chars-modified-tick)
-         :patterns patterns
-         :comments-only scrollview-keywords-comments-only)
+   'keywords
+   (scrollview--hl-todo-token)
    (lambda ()
      (let (lines)
-       (save-excursion
-         (save-match-data
-           (dolist (pattern patterns)
+       (when (scrollview--hl-todo-available-p)
+         (save-excursion
+           (save-match-data
              (goto-char (point-min))
-             (condition-case nil
-                 (catch 'done
-                   (while (re-search-forward pattern nil t)
-                     (let ((start (match-beginning 0))
-                           (end (match-end 0)))
-                       (when (or (not scrollview-keywords-comments-only)
-                                 (scrollview--match-in-comment-p start))
-                         (push (line-number-at-pos start t) lines))
-                       (when (= start end)
-                         (if (eobp)
-                             (throw 'done nil)
-                           (forward-char 1))))))
-               (invalid-regexp nil)))))
-       (scrollview--dedupe-sorted-lines lines)))))
+             (while (ignore-errors (hl-todo--search))
+               (when-let* ((keyword (match-string-no-properties 2))
+                           (variant (scrollview--hl-todo-match-variant
+                                     keyword)))
+                 (let ((line (line-number-at-pos (match-beginning 1) t))
+                       (cell (assq variant lines)))
+                   (if cell
+                       (setcdr cell (cons line (cdr cell)))
+                     (push (cons variant (list line)) lines))))))))
+       (mapcar (lambda (entry)
+                 (cons (car entry)
+                       (scrollview--dedupe-sorted-lines (cdr entry))))
+               lines)))))
 
 (defun scrollview--collect-keyword-lines (variant)
   "Collect keyword lines for VARIANT."
-  (when-let ((patterns (alist-get variant scrollview-keyword-patterns)))
-    (scrollview--keyword-lines variant patterns)))
+  (cdr (assq variant (scrollview--hl-todo-lines))))
 
-(defun scrollview--face-symbols (face)
-  "Return symbol faces contained in FACE."
-  (cond
-   ((symbolp face) (list face))
-   ((and (consp face) (eq (car face) :inherit))
-    (scrollview--face-symbols (cadr face)))
-   ((consp face)
-    (cl-loop for item in face append (scrollview--face-symbols item)))))
+(defun scrollview--marker-position-live-p (marker)
+  "Return non-nil when MARKER still points into the current buffer."
+  (and (markerp marker)
+       (eq (marker-buffer marker) (current-buffer))
+       (marker-position marker)))
 
-(defun scrollview--flyspell-overlay-p (overlay)
-  "Return non-nil if OVERLAY looks like a flyspell overlay."
-  (or (overlay-get overlay 'flyspell-overlay)
-      (cl-intersection
-       (scrollview--face-symbols (overlay-get overlay 'face))
-       '(flyspell-incorrect flyspell-duplicate)
-       :test #'eq)))
+(defun scrollview--ispell-note-update ()
+  "Invalidate spell signs after an Ispell result change."
+  (cl-incf scrollview--spell-state-generation)
+  (when (bound-and-true-p scrollview-mode)
+    (scrollview--invalidate-buffer-sign-cache)
+    (scrollview--schedule-buffer-refresh)))
+
+(defun scrollview--ispell-clear-line (position)
+  "Forget recorded Ispell misspellings on POSITION's line."
+  (let ((line (line-number-at-pos position t))
+        changed)
+    (dolist (marker scrollview--ispell-misspelling-markers)
+      (unless (and (scrollview--marker-position-live-p marker)
+                   (= (line-number-at-pos marker t) line))
+        (push marker changed)))
+    (unless (= (length changed)
+               (length scrollview--ispell-misspelling-markers))
+      (mapc (lambda (marker)
+              (unless (memq marker changed)
+                (set-marker marker nil)))
+            scrollview--ispell-misspelling-markers)
+      (setq scrollview--ispell-misspelling-markers (nreverse changed))
+      (scrollview--ispell-note-update))))
+
+(defun scrollview--ispell-clear-region (beg end)
+  "Forget recorded Ispell misspellings between BEG and END."
+  (let (kept changed)
+    (dolist (marker scrollview--ispell-misspelling-markers)
+      (if (and (scrollview--marker-position-live-p marker)
+               (<= beg (marker-position marker))
+               (< (marker-position marker) end))
+          (progn
+            (setq changed t)
+            (set-marker marker nil))
+        (push marker kept)))
+    (when changed
+      (setq scrollview--ispell-misspelling-markers (nreverse kept))
+      (scrollview--ispell-note-update))))
+
+(defun scrollview--ispell-record-misspelling (position)
+  "Record an Ispell misspelling at POSITION."
+  (scrollview--ispell-clear-line position)
+  (let ((marker (copy-marker position t)))
+    (push marker scrollview--ispell-misspelling-markers)
+    (scrollview--ispell-note-update)))
 
 (defun scrollview--spell-lines ()
-  "Return lines that currently contain flyspell overlays."
+  "Return lines that Ispell reported as misspelled."
   (scrollview--cached-collector-value
    'spell
    (list :tick (buffer-chars-modified-tick)
          :generation scrollview--spell-state-generation)
    (lambda ()
-     (let (lines)
-       (dolist (overlay (overlays-in (point-min) (point-max)))
-         (when (scrollview--flyspell-overlay-p overlay)
-           (push (line-number-at-pos (overlay-start overlay) t) lines)))
-       (scrollview--dedupe-sorted-lines lines)))))
+     (setq scrollview--ispell-misspelling-markers
+           (cl-remove-if-not #'scrollview--marker-position-live-p
+                             scrollview--ispell-misspelling-markers))
+     (scrollview--dedupe-sorted-lines
+      (mapcar (lambda (marker)
+                (line-number-at-pos marker t))
+              scrollview--ispell-misspelling-markers)))))
 
 (defun scrollview--collect-spell-lines (_window)
-  "Collect spelling error lines from flyspell overlays."
+  "Collect spelling error lines recorded from Ispell."
   (scrollview--spell-lines))
 
-(defun scrollview--vc-parse-hunk-header (line)
-  "Parse unified diff hunk header LINE.
-Return (OLD-START OLD-COUNT NEW-START NEW-COUNT), or nil."
-  (when (string-match
-         "^@@ -\\([0-9]+\\)\\(?:,\\([0-9]+\\)\\)? +\\+\\([0-9]+\\)\\(?:,\\([0-9]+\\)\\)? @@"
-         line)
-    (list (string-to-number (match-string 1 line))
-          (if (match-string 2 line)
-              (string-to-number (match-string 2 line))
-            1)
-          (string-to-number (match-string 3 line))
-          (if (match-string 4 line)
-              (string-to-number (match-string 4 line))
-            1))))
+(defun scrollview--diff-hl-available-p ()
+  "Return non-nil when diff-hl can provide VC changes."
+  (require 'diff-hl nil t))
 
-(defun scrollview--vc-flush-change-group (start added deleted result)
-  "Add one diff change group to RESULT.
-START is the current-file line where the group began.  ADDED is a list of
-current-file added line numbers.  DELETED is the number of removed base lines."
-  (when start
-    (setq added (nreverse added))
-    (let ((added-count (length added)))
-      (cond
-       ((and (> added-count 0) (= deleted 0))
-        (plist-put result :add (append (plist-get result :add) added)))
-       ((and (= added-count 0) (> deleted 0))
-        (plist-put result :delete
-                   (append (plist-get result :delete) (list start))))
-       ((and (> added-count 0) (> deleted 0))
-        (let ((change-count (min added-count deleted)))
-          (plist-put result :change
-                     (append (plist-get result :change)
-                             (cl-subseq added 0 change-count)))
-          (when (> added-count deleted)
-            (plist-put result :add
-                       (append (plist-get result :add)
-                               (nthcdr deleted added)))))))))
+(defun scrollview--diff-hl-change-value (value)
+  "Return diff-hl hunk tuples from VALUE."
+  (cond
+   ((null value) nil)
+   ((listp value) value)
+   ((bufferp value)
+    (diff-hl-changes-from-buffer value))
+   ((stringp value)
+    (when-let ((buffer (get-buffer value)))
+      (diff-hl-changes-from-buffer buffer)))))
+
+(defun scrollview--diff-hl-hunks ()
+  "Return diff-hl hunk tuples for the current buffer."
+  (when (scrollview--diff-hl-available-p)
+    (let ((diff-hl-update-async nil))
+      (cl-loop for (_ . value) in (ignore-errors (diff-hl-changes))
+               append (scrollview--diff-hl-change-value value)))))
+
+(defun scrollview--vc-add-line-range (result key start count)
+  "Add COUNT lines starting at START to RESULT under KEY."
+  (let ((count (max 1 count)))
+    (dotimes (offset count)
+      (plist-put result key
+                 (cons (+ start offset) (plist-get result key)))))
   result)
 
-(defun scrollview--parse-unified-diff-lines (diff)
-  "Parse unified DIFF text into a plist of VC sign lines."
-  (let ((result (list :add nil :change nil :delete nil))
-        (new-line nil)
-        (group-start nil)
-        (group-added nil)
-        (group-deleted 0))
-    (cl-labels
-        ((flush-group
-          ()
-          (setq result
-                (scrollview--vc-flush-change-group
-                 group-start group-added group-deleted result))
-          (setq group-start nil
-                group-added nil
-                group-deleted 0)))
-      (dolist (line (split-string diff "\n"))
-        (if-let ((header (scrollview--vc-parse-hunk-header line)))
-            (progn
-              (flush-group)
-              (setq new-line (nth 2 header)))
-          (when new-line
-            (cond
-             ((string-prefix-p "+" line)
-              (unless (string-prefix-p "+++" line)
-                (unless group-start
-                  (setq group-start new-line))
-                (push new-line group-added)
-                (setq new-line (1+ new-line))))
-             ((string-prefix-p "-" line)
-              (unless (string-prefix-p "---" line)
-                (unless group-start
-                  (setq group-start new-line))
-                (setq group-deleted (1+ group-deleted))))
-             ((string-prefix-p " " line)
-              (flush-group)
-              (setq new-line (1+ new-line)))
-             ((string-prefix-p "\\" line)
-              nil)
-             (t
-              (flush-group)
-              (setq new-line nil))))))
-      (flush-group))
-    (list :add (scrollview--dedupe-sorted-lines (plist-get result :add))
-          :change (scrollview--dedupe-sorted-lines (plist-get result :change))
-          :delete (scrollview--dedupe-sorted-lines (plist-get result :delete)))))
-
-(defun scrollview--vc-git-root (file)
-  "Return Git root for FILE, or nil."
-  (when (and file (not (file-remote-p file)))
-    (locate-dominating-file file ".git")))
-
-(defun scrollview--vc-git-tracked-p (root relative-file)
-  "Return non-nil if RELATIVE-FILE is tracked by Git under ROOT."
-  (let ((default-directory root))
-    (eq 0 (process-file "git" nil nil nil
-                        "ls-files" "--error-unmatch" "--" relative-file))))
-
-(defun scrollview--vc-git-write-base (root relative-file destination)
-  "Write Git HEAD content for RELATIVE-FILE under ROOT to DESTINATION.
-Return non-nil when HEAD content was found."
-  (let ((default-directory root))
-    (with-temp-buffer
-      (let ((status (process-file "git" nil t nil
-                                  "--no-pager" "show"
-                                  (concat "HEAD:" relative-file))))
-        (when (eq status 0)
-          (write-region (point-min) (point-max) destination nil 'silent)
-          t)))))
-
-(defun scrollview--vc-git-diff-current-buffer (root relative-file)
-  "Return unified diff between Git HEAD RELATIVE-FILE and current buffer."
-  (let ((base-file (make-temp-file "scrollview-vc-base-"))
-        (current-file (make-temp-file "scrollview-vc-current-")))
-    (unwind-protect
-        (progn
-          (unless (scrollview--vc-git-write-base root relative-file base-file)
-            (write-region "" nil base-file nil 'silent))
-          (write-region (point-min) (point-max) current-file nil 'silent)
-          (let ((default-directory root))
-            (with-temp-buffer
-              (let ((status (process-file "git" nil t nil
-                                          "--no-pager" "diff"
-                                          "--no-index"
-                                          "--unified=0"
-                                          "--" base-file current-file)))
-                (when (memq status '(0 1))
-                  (buffer-string))))))
-      (ignore-errors (delete-file base-file))
-      (ignore-errors (delete-file current-file)))))
-
 (defun scrollview--vc-lines ()
-  "Return VC sign lines for the current buffer."
+  "Return VC sign lines reported by diff-hl."
   (scrollview--cached-collector-value
    'vc
    (list :tick (buffer-chars-modified-tick)
          :file (buffer-file-name)
-         :size (buffer-size))
+         :reference (and (boundp 'diff-hl-reference-revision)
+                         diff-hl-reference-revision)
+         :show-staged (and (boundp 'diff-hl-show-staged-changes)
+                           diff-hl-show-staged-changes)
+         :generation scrollview--vc-state-generation)
    (lambda ()
-     (let* ((file (buffer-file-name))
-            (root (scrollview--vc-git-root file))
-            (relative-file (and root
-                                (file-relative-name
-                                 (expand-file-name file)
-                                 (expand-file-name root))))
-            (buffer-lines (scrollview--line-count)))
-       (if (and root
-                relative-file
-                (executable-find "git")
-                (scrollview--vc-git-tracked-p root relative-file))
-           (let* ((diff (scrollview--vc-git-diff-current-buffer
-                         root relative-file))
-                  (lines (scrollview--parse-unified-diff-lines (or diff ""))))
-             (list :add (scrollview--clamp-lines
-                         (plist-get lines :add) buffer-lines)
-                   :change (scrollview--clamp-lines
-                            (plist-get lines :change) buffer-lines)
-                   :delete (scrollview--clamp-lines
-                            (plist-get lines :delete) buffer-lines)))
-         (list :add nil :change nil :delete nil))))))
+     (let ((buffer-lines (scrollview--line-count))
+           (result (list :add nil :change nil :delete nil)))
+       (dolist (hunk (scrollview--diff-hl-hunks))
+         (pcase-let ((`(,line ,inserts ,_deletes ,type) hunk))
+           (pcase type
+             ('insert
+              (setq result
+                    (scrollview--vc-add-line-range
+                     result :add line inserts)))
+             ('change
+              (setq result
+                    (scrollview--vc-add-line-range
+                     result :change line inserts)))
+             ('delete
+              (setq result
+                    (scrollview--vc-add-line-range
+                     result :delete line 1))))))
+       (list :add (scrollview--clamp-lines
+                   (plist-get result :add) buffer-lines)
+             :change (scrollview--clamp-lines
+                      (plist-get result :change) buffer-lines)
+             :delete (scrollview--clamp-lines
+                      (plist-get result :delete) buffer-lines))))))
 
 (defun scrollview--collect-vc-lines (variant)
   "Collect VC sign lines for VARIANT."
@@ -533,16 +548,23 @@ Each element of SPECS is a plist passed to `scrollview-register-sign-spec'."
                      #'scrollview--collect-conflict-lines 'bottom))))
 
 (defun scrollview--keyword-sign-specs ()
-  "Return built-in keyword sign specs."
-  (cl-loop for (variant . patterns) in scrollview-keyword-patterns
-           when (and (symbolp variant) patterns)
-           collect
-           (list :variant variant
-                 :priority (scrollview--keyword-priority variant)
-                 :bitmap (scrollview--keyword-bitmap variant)
-                 :face (scrollview--keyword-face variant)
-                 :collector (scrollview--variant-collector
-                             #'scrollview--collect-keyword-lines variant))))
+  "Return built-in keyword sign specs from hl-todo."
+  (when (scrollview--hl-todo-available-p)
+    (let (seen specs)
+      (dolist (entry (and (boundp 'hl-todo-keyword-faces)
+                          hl-todo-keyword-faces))
+        (let ((variant (scrollview--hl-todo-keyword-variant (car entry))))
+          (unless (memq variant seen)
+            (push variant seen)
+            (push (list :variant variant
+                        :priority (scrollview--keyword-priority variant)
+                        :bitmap (scrollview--keyword-bitmap variant)
+                        :face (scrollview--keyword-face variant)
+                        :collector (scrollview--variant-collector
+                                    #'scrollview--collect-keyword-lines
+                                    variant))
+                  specs))))
+      (nreverse specs))))
 
 (defun scrollview--vc-sign-specs ()
   "Return built-in VC sign specs."
@@ -604,6 +626,7 @@ Each element of SPECS is a plist passed to `scrollview-register-sign-spec'."
 (defun scrollview--after-diagnostics-update (&rest _)
   "Refresh scrollview signs after diagnostics are updated."
   (when (bound-and-true-p scrollview-mode)
+    (cl-incf scrollview--diagnostic-state-generation)
     (scrollview--sync-diagnostic-faces)
     (scrollview--invalidate-buffer-sign-cache)
     (scrollview--schedule-buffer-refresh)))
@@ -617,21 +640,47 @@ Each element of SPECS is a plist passed to `scrollview-register-sign-spec'."
   (add-hook 'flycheck-after-syntax-check-hook
             #'scrollview--after-diagnostics-update))
 
-(defun scrollview--after-spell-update (&rest _)
-  "Refresh scrollview signs after flyspell overlays may have changed."
+(defun scrollview--before-ispell-region (beg end &rest _)
+  "Forget recorded Ispell misspellings before checking BEG to END."
+  (scrollview--ispell-clear-region beg end))
+
+(defun scrollview--around-ispell-command-loop
+    (function miss guess word start end)
+  "Record Ispell misspellings observed by FUNCTION.
+MISS, GUESS, WORD, START, and END are the arguments passed to
+`ispell-command-loop'."
+  (let ((marker (copy-marker start t)))
+    (unwind-protect
+        (let ((result (funcall function miss guess word start end)))
+          (if result
+              (scrollview--ispell-clear-line marker)
+            (scrollview--ispell-record-misspelling marker))
+          result)
+      (set-marker marker nil))))
+
+(with-eval-after-load 'ispell
+  (unless (advice-member-p #'scrollview--before-ispell-region
+                           'ispell-region)
+    (advice-add 'ispell-region :before
+                #'scrollview--before-ispell-region))
+  (unless (advice-member-p #'scrollview--around-ispell-command-loop
+                           'ispell-command-loop)
+    (advice-add 'ispell-command-loop :around
+                #'scrollview--around-ispell-command-loop)))
+
+(defun scrollview--after-diff-hl-update (&rest _)
+  "Refresh scrollview signs after diff-hl updates."
   (when (bound-and-true-p scrollview-mode)
-    (cl-incf scrollview--spell-state-generation)
-    (when (scrollview-sign-group-active-p 'spell)
+    (cl-incf scrollview--vc-state-generation)
+    (when (scrollview-sign-group-active-p 'vc)
       (scrollview--invalidate-buffer-sign-cache)
       (scrollview--schedule-buffer-refresh))))
 
-(with-eval-after-load 'flyspell
-  (add-hook 'flyspell-mode-hook #'scrollview--after-spell-update)
-  (dolist (function '(flyspell-word flyspell-region flyspell-buffer))
-    (when (and (fboundp function)
-               (not (advice-member-p #'scrollview--after-spell-update
-                                      function)))
-      (advice-add function :after #'scrollview--after-spell-update))))
+(with-eval-after-load 'diff-hl
+  (unless (advice-member-p #'scrollview--after-diff-hl-update
+                           'diff-hl-update)
+    (advice-add 'diff-hl-update :after
+                #'scrollview--after-diff-hl-update)))
 
 
 

@@ -79,6 +79,9 @@
 (defvar-local scrollview--spell-state-generation 0
   "Buffer-local generation incremented after known spelling updates.")
 
+(defvar-local scrollview--diagnostic-state-generation 0
+  "Buffer-local generation incremented after diagnostics updates.")
+
 (defvar-local scrollview--line-count-cache nil
   "Buffer-local cache of the current line count.")
 
@@ -146,21 +149,6 @@
   "Return the line number at WINDOW's start."
   (with-current-buffer (window-buffer window)
     (line-number-at-pos (window-start window) t)))
-
-(defun scrollview--window-bottom-visible-p (window)
-  "Return non-nil if WINDOW shows the end of its buffer."
-  (with-current-buffer (window-buffer window)
-    (>= (+ (scrollview--window-top-line window)
-           (scrollview--window-line-height window)
-           -1)
-        (scrollview--line-count))))
-
-(defun scrollview--window-overflow-p (window)
-  "Return non-nil if WINDOW does not show the whole buffer."
-  (with-current-buffer (window-buffer window)
-    (or (> (scrollview--window-top-line window) 1)
-        (> (scrollview--line-count)
-           (scrollview--window-line-height window)))))
 
 (defun scrollview--restricted-p (&optional buffer)
   "Return non-nil when BUFFER should use restricted mode."
@@ -303,7 +291,10 @@ BOTTOM-VISIBLE should be non-nil when point-max is visible."
     (let* ((window-lines (scrollview--window-line-height window))
            (buffer-lines (scrollview--line-count))
            (top-line (scrollview--window-top-line window))
-           (bottom-visible (scrollview--window-bottom-visible-p window))
+           (bottom-line (+ top-line window-lines -1))
+           (bottom-visible (>= bottom-line buffer-lines))
+           (overflow (or (> top-line 1)
+                         (> buffer-lines window-lines)))
            (thumb-size (scrollview--compute-thumb-size window-lines buffer-lines))
            (thumb-top (scrollview--compute-thumb-top
                        window-lines buffer-lines top-line thumb-size
@@ -314,7 +305,7 @@ BOTTOM-VISIBLE should be non-nil when point-max is visible."
             :bottom-visible bottom-visible
             :thumb-size thumb-size
             :thumb-top thumb-top
-            :overflow (scrollview--window-overflow-p window)
+            :overflow overflow
             :restricted (scrollview--restricted-p)))))
 
 
@@ -583,27 +574,23 @@ matches.  Fresh collections always update the cache."
                                   line)))))
     slots))
 
-(defun scrollview--make-overlay (window row slot)
-  "Make a fringe overlay for SLOT at zero-based ROW in WINDOW."
-  (with-selected-window window
-    (save-excursion
-      (goto-char (window-start window))
-      (vertical-motion row)
-      (let* ((pos (point))
-             (pos (if (= pos (line-end-position))
-                      pos
-                    (min (point-max) (1+ pos))))
-             (display `(,(scrollview--fringe-side)
-                        ,(plist-get slot :bitmap)
-                        ,(plist-get slot :face)))
-             (string (propertize "." 'display display))
-             (overlay (make-overlay pos pos)))
-        (overlay-put overlay 'after-string string)
-        (overlay-put overlay 'window window)
-        (overlay-put overlay 'priority scrollview-overlay-priority)
-        (overlay-put overlay 'scrollview t)
-        (overlay-put overlay 'help-echo (plist-get slot :help-echo))
-        overlay))))
+(defun scrollview--make-overlay-at-point (window slot)
+  "Make a fringe overlay for SLOT at point in WINDOW."
+  (let* ((pos (point))
+         (pos (if (= pos (line-end-position))
+                  pos
+                (min (point-max) (1+ pos))))
+         (display `(,(scrollview--fringe-side)
+                    ,(plist-get slot :bitmap)
+                    ,(plist-get slot :face)))
+         (string (propertize "." 'display display))
+         (overlay (make-overlay pos pos)))
+    (overlay-put overlay 'after-string string)
+    (overlay-put overlay 'window window)
+    (overlay-put overlay 'priority scrollview-overlay-priority)
+    (overlay-put overlay 'scrollview t)
+    (overlay-put overlay 'help-echo (plist-get slot :help-echo))
+    overlay))
 
 (defun scrollview--should-render-p (info sign-items)
   "Return non-nil if INFO and SIGN-ITEMS should be rendered."
@@ -624,11 +611,19 @@ valid."
       (when (scrollview--should-render-p info sign-items)
         (let ((slots (scrollview--build-slots window info sign-items))
               overlays)
-          (cl-loop for row from 0 below (length slots)
-                   for slot = (aref slots row)
-                   when slot
-                   do (push (scrollview--make-overlay window row slot)
-                            overlays))
+          (with-selected-window window
+            (save-excursion
+              (goto-char (window-start window))
+              (cl-loop with current-row = 0
+                       for row from 0 below (length slots)
+                       for slot = (aref slots row)
+                       do (when (< current-row row)
+                            (vertical-motion (- row current-row))
+                            (setq current-row row))
+                       when slot
+                       do (push (scrollview--make-overlay-at-point
+                                 window slot)
+                                overlays))))
           (puthash window overlays scrollview--window-overlays))))))
 
 (defun scrollview--refresh-now (&optional window reuse-signs)

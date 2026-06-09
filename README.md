@@ -41,7 +41,6 @@ The package is split into small internal modules:
 (setq scrollview-visibility 'overflow)     ; overflow, always, info
 (setq scrollview-current-window-only nil)
 (setq scrollview-signs-on-startup '(search diagnostics))
-(setq scrollview-keywords-comments-only nil)
 ```
 
 Large buffers enter restricted mode and skip signs:
@@ -78,14 +77,14 @@ registration changes.
 - `search`: matches from active isearch, or retained isearch lazy highlights
 - `diagnostics`: Flymake diagnostics and loaded Flycheck errors, using dot
   signs colored by the theme's diagnostic faces
-- `conflicts`: optional, disabled by default; Git conflict marker lines
-  (`<<<<<<<`, `=======`, `>>>>>>>`)
-- `keywords`: optional, disabled by default; configurable TODO/FIXME/HACK/NOTE
-  style regexps
-- `spell`: optional, disabled by default; current Flyspell incorrect-word
-  overlays
-- `vc`: optional, disabled by default; Git add/change/delete signs computed
-  from the current buffer contents against `HEAD`
+- `conflicts`: optional, disabled by default; conflict markers found through
+  `smerge-mode`
+- `keywords`: optional, disabled by default; keyword matches found through
+  `hl-todo`
+- `spell`: optional, disabled by default; misspellings recorded from `ispell`
+  sessions
+- `vc`: optional, disabled by default; add/change/delete hunks reported by
+  `diff-hl`
 
 Built-in sign shapes:
 
@@ -131,9 +130,8 @@ thumb background so the scrollbar remains visually continuous.
 - No multi-column sign overflow
 - Positioning uses simple line-based mapping; fold/wrap-accurate proper mode is
   deferred
-- VC signs currently support local Git-backed files.  They do not use a
-  childframe, do not require saving the buffer, and do not render non-Git VC
-  backends in v1.
+- VC signs follow `diff-hl` support.  Backends and refresh behavior are the
+  same ones `diff-hl` can report for the current buffer.
 
 ## Tests
 
