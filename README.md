@@ -40,7 +40,7 @@ The package is split into small internal modules:
 (setq scrollview-side 'right)              ; or 'left
 (setq scrollview-visibility 'overflow)     ; overflow, always, info
 (setq scrollview-current-window-only nil)
-(setq scrollview-signs-on-startup '(search diagnostics))
+(setq scrollview-signs-on-startup '(search diagnostics)) ; or 'all
 ```
 
 Large buffers enter restricted mode and skip signs:

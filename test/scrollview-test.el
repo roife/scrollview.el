@@ -271,6 +271,13 @@
     (dolist (group '(conflicts keywords spell vc))
       (should-not (scrollview-sign-group-active-p group)))))
 
+(ert-deftest scrollview-startup-all-symbol-enables-all-groups ()
+  (scrollview-test--reset-state)
+  (let ((scrollview-signs-on-startup 'all))
+    (scrollview--initialize-builtins)
+    (dolist (group '(search diagnostics conflicts keywords spell vc))
+      (should (scrollview-sign-group-active-p group)))))
+
 (ert-deftest scrollview-builtins-register-new-sign-groups ()
   (scrollview-test--reset-state)
   (let ((scrollview-signs-on-startup nil))

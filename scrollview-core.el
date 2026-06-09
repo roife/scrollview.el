@@ -15,7 +15,7 @@
 (require 'scrollview-custom)
 (require 'scrollview-faces)
 
-(declare-function scrollview--initialize-builtins "scrollview-signs")
+(autoload 'scrollview--initialize-builtins "scrollview-signs")
 
 (defvar-local scrollview-mode nil
   "Non-nil when `scrollview-mode' is enabled.")
@@ -379,8 +379,10 @@ ARGS is a plist accepting:
 
 (defun scrollview--startup-sign-enabled-p (group)
   "Return non-nil if GROUP should be enabled on startup."
-  (or (memq 'all scrollview-signs-on-startup)
-      (memq group scrollview-signs-on-startup)))
+  (or (eq scrollview-signs-on-startup 'all)
+      (and (listp scrollview-signs-on-startup)
+           (or (memq 'all scrollview-signs-on-startup)
+               (memq group scrollview-signs-on-startup)))))
 
 ;;;###autoload
 (defun scrollview-set-sign-group-state (group state)

@@ -59,8 +59,9 @@ Set to -1 to disable this limit.  Restricted mode disables signs."
 
 (defcustom scrollview-signs-on-startup '(search diagnostics)
   "Built-in sign groups enabled when scrollview is first used.
-Use the symbol `all' to enable all built-in groups."
-  :type '(repeat symbol)
+Use `all' to enable all built-in groups."
+  :type '(choice (const :tag "All built-in groups" all)
+                 (repeat :tag "Selected groups" symbol))
   :group 'scrollview)
 
 (defcustom scrollview-refresh-delay 0.03
