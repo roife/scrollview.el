@@ -24,7 +24,7 @@ The value must be either `right' or `left'."
                  (const :tag "Left fringe" left))
   :group 'scrollview)
 
-(defcustom scrollview-visibility 'overflow
+(defcustom scrollview-visibility 'always
   "When scrollview overlays should be shown.
 `overflow' shows scrollview only when the buffer is not fully visible.
 `always' shows it whenever the window is eligible.
@@ -57,7 +57,7 @@ Set to -1 to disable this limit.  Restricted mode disables signs."
   :type 'integer
   :group 'scrollview)
 
-(defcustom scrollview-signs-on-startup '(search diagnostics)
+(defcustom scrollview-signs-on-startup 'all
   "Built-in sign groups enabled when scrollview is first used.
 Use `all' to enable all built-in groups."
   :type '(choice (const :tag "All built-in groups" all)
