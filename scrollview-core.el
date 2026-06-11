@@ -594,34 +594,91 @@ matches.  Fresh collections always update the cache."
                                   line)))))
     slots))
 
-(defun scrollview--make-overlay-at-point (window slot target-line)
-  "Make a fringe overlay for SLOT at point in WINDOW.
-TARGET-LINE is the line clicked by the mouse for this overlay."
-  (let* ((pos (point))
-         (pos (if (= pos (line-end-position))
-                  pos
-                (min (point-max) (1+ pos))))
-         (display `(,(if (eq scrollview-side 'left)
-                         'left-fringe
-                       'right-fringe)
-                    ,(plist-get slot :bitmap)
-                    ,(plist-get slot :face)))
-         (string (propertize "." 'display display
-                             'keymap scrollview--mouse-map
-                             'mouse-face 'highlight
-                             'scrollview-target-line target-line
-                             'scrollview-target-type
-                             (plist-get slot :type)))
-         (overlay (make-overlay pos pos)))
-    (overlay-put overlay 'after-string string)
-    (overlay-put overlay 'window window)
-    (overlay-put overlay 'priority scrollview-overlay-priority)
-    (overlay-put overlay 'scrollview t)
-    (overlay-put overlay 'keymap scrollview--mouse-map)
-    (overlay-put overlay 'scrollview-target-line target-line)
-    (overlay-put overlay 'scrollview-target-type (plist-get slot :type))
-    (overlay-put overlay 'help-echo (plist-get slot :help-echo))
+(defun scrollview--overlay-position-at-point ()
+  "Return the buffer position for a fringe overlay at point."
+  (let ((pos (point)))
+    (if (= pos (line-end-position))
+        pos
+      (min (point-max) (1+ pos)))))
+
+(defun scrollview--overlay-display-side ()
+  "Return the fringe display side for `scrollview-side'."
+  (if (eq scrollview-side 'left) 'left-fringe 'right-fringe))
+
+(defun scrollview--overlay-render-state (slot target-line)
+  "Return the rendered overlay state for SLOT and TARGET-LINE."
+  (list :side (scrollview--overlay-display-side)
+        :bitmap (plist-get slot :bitmap)
+        :face (plist-get slot :face)
+        :target-line target-line
+        :target-type (plist-get slot :type)
+        :help-echo (plist-get slot :help-echo)
+        :priority scrollview-overlay-priority))
+
+(defun scrollview--overlay-after-string (slot target-line)
+  "Return the fringe after-string for SLOT and TARGET-LINE."
+  (propertize "." 'display `(,(scrollview--overlay-display-side)
+                             ,(plist-get slot :bitmap)
+                             ,(plist-get slot :face))
+              'keymap scrollview--mouse-map
+              'mouse-face 'highlight
+              'scrollview-target-line target-line
+              'scrollview-target-type (plist-get slot :type)))
+
+(defun scrollview--update-overlay-at-point (overlay window row slot target-line)
+  "Move and update OVERLAY for WINDOW, ROW, SLOT, and TARGET-LINE."
+  (let ((pos (scrollview--overlay-position-at-point))
+        (state (scrollview--overlay-render-state slot target-line)))
+    (unless (and (eq (overlay-buffer overlay) (current-buffer))
+                 (= (overlay-start overlay) pos)
+                 (= (overlay-end overlay) pos))
+      (move-overlay overlay pos pos (current-buffer)))
+    (unless (equal state (overlay-get overlay 'scrollview-render-state))
+      (overlay-put overlay 'after-string
+                   (scrollview--overlay-after-string slot target-line))
+      (overlay-put overlay 'window window)
+      (overlay-put overlay 'priority scrollview-overlay-priority)
+      (overlay-put overlay 'scrollview t)
+      (overlay-put overlay 'keymap scrollview--mouse-map)
+      (overlay-put overlay 'scrollview-target-line target-line)
+      (overlay-put overlay 'scrollview-target-type (plist-get slot :type))
+      (overlay-put overlay 'help-echo (plist-get slot :help-echo))
+      (overlay-put overlay 'scrollview-render-state state))
+    (overlay-put overlay 'scrollview-row row)
     overlay))
+
+(defun scrollview--target-line-for-row (slot row info)
+  "Return the click target line for SLOT at ROW using INFO."
+  (or (plist-get slot :line)
+      (scrollview--row-to-line
+       row
+       (or (plist-get info :track-lines)
+           (plist-get info :window-lines))
+       (plist-get info :buffer-lines))))
+
+(defun scrollview--current-window-overlays (window)
+  "Return reusable overlays for WINDOW as (BY-ROW SPARE).
+Stale overlays are deleted while building the return value."
+  (let ((buffer (window-buffer window))
+        (by-row (make-hash-table :test #'eql))
+        spare)
+    (dolist (overlay (gethash window scrollview--window-overlays))
+      (if (and (overlayp overlay)
+               (eq (overlay-buffer overlay) buffer))
+          (let ((row (overlay-get overlay 'scrollview-row)))
+            (if (and (integerp row)
+                     (not (gethash row by-row)))
+                (puthash row overlay by-row)
+              (push overlay spare)))
+        (delete-overlay overlay)))
+    (list by-row spare)))
+
+(defun scrollview--delete-unused-overlays (by-row spare)
+  "Delete overlays left unused in BY-ROW and SPARE."
+  (maphash (lambda (_row overlay)
+             (delete-overlay overlay))
+           by-row)
+  (mapc #'delete-overlay spare))
 
 (defun scrollview--should-render-p (info sign-items)
   "Return non-nil if INFO and SIGN-ITEMS should be rendered."
@@ -634,34 +691,42 @@ TARGET-LINE is the line clicked by the mouse for this overlay."
   "Refresh scrollview overlays for WINDOW.
 When REUSE-SIGNS is non-nil, reuse cached sign items when they are still
 valid."
-  (scrollview--delete-window-overlays window)
-  (when (scrollview--window-eligible-p window)
-    (let* ((info (scrollview--position-info window))
-           (sign-items (scrollview--collect-sign-items-cached
-                        window reuse-signs)))
-      (when (scrollview--should-render-p info sign-items)
-        (let ((slots (scrollview--build-slots window info sign-items))
-              overlays)
-          (with-selected-window window
-            (save-excursion
-              (goto-char (window-start window))
-              (cl-loop with current-row = 0
-                       for row from 0 below (length slots)
-                       for slot = (aref slots row)
-                       do (when (< current-row row)
-                            (vertical-motion (- row current-row))
-                            (setq current-row row))
-                       when slot
-                       do (push (scrollview--make-overlay-at-point
-                                 window slot
-                                 (or (plist-get slot :line)
-                                     (scrollview--row-to-line
-                                      row
-                                      (or (plist-get info :track-lines)
-                                          (plist-get info :window-lines))
-                                      (plist-get info :buffer-lines))))
-                                overlays))))
-          (puthash window overlays scrollview--window-overlays))))))
+  (if (scrollview--window-eligible-p window)
+      (let* ((info (scrollview--position-info window))
+             (sign-items (scrollview--collect-sign-items-cached
+                          window reuse-signs)))
+        (if (scrollview--should-render-p info sign-items)
+            (let ((slots (scrollview--build-slots window info sign-items))
+                  overlays)
+              (pcase-let ((`(,by-row ,spare)
+                           (scrollview--current-window-overlays window)))
+                (with-selected-window window
+                  (save-excursion
+                    (goto-char (window-start window))
+                    (cl-loop with current-row = 0
+                             for row from 0 below (length slots)
+                             for slot = (aref slots row)
+                             do (when (< current-row row)
+                                  (vertical-motion (- row current-row))
+                                  (setq current-row row))
+                             when slot
+                             do (let* ((target-line
+                                        (scrollview--target-line-for-row
+                                         slot row info))
+                                       (same-row-overlay (gethash row by-row))
+                                       (overlay (or same-row-overlay
+                                                    (pop spare)
+                                                    (make-overlay
+                                                     (point) (point)))))
+                                  (when same-row-overlay
+                                    (remhash row by-row))
+                                  (push (scrollview--update-overlay-at-point
+                                         overlay window row slot target-line)
+                                        overlays)))))
+                (scrollview--delete-unused-overlays by-row spare)
+                (puthash window overlays scrollview--window-overlays)))
+          (scrollview--delete-window-overlays window)))
+    (scrollview--delete-window-overlays window)))
 
 (defun scrollview--refresh-now (&optional window reuse-signs)
   "Refresh scrollview overlays now.

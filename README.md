@@ -150,3 +150,55 @@ thumb background so the scrollbar remains visually continuous.
 /Applications/Emacs.2026-04-18.8f53537.emacs-30.macOS-26.arm64/Emacs.app/Contents/MacOS/Emacs \
   -Q --batch -L . -l test/scrollview-test.el -f ert-run-tests-batch-and-exit
 ```
+
+## Performance Metrics
+
+Use the batch benchmark harness to evaluate `scrollview` under a repeatable
+stress workload instead of a micro-benchmark:
+
+```sh
+/Applications/Emacs.2026-04-18.8f53537.emacs-30.macOS-26.arm64/Emacs.app/Contents/MacOS/Emacs \
+  -Q --batch -L . -l test/scrollview-benchmark.el -f scrollview-benchmark-run
+```
+
+Optional environment variables:
+
+- `SCROLLVIEW_BENCH_ITERATIONS`: iterations per scenario, default `1`
+- `SCROLLVIEW_BENCH_LINES`: line count for standard scenarios, default `20000`
+- `SCROLLVIEW_BENCH_LARGE_LINES`: line count for restricted mode, default `100000`
+
+The benchmark prints JSON with these scenarios:
+
+- `cold_refresh_plain`: first full refresh cost without signs
+- `warm_refresh_plain`: repeated full refresh cost without signs
+- `scroll_refresh_plain`: synchronous scroll refresh cost without signs
+- `full_refresh_with_signs`: full refresh cost with synthetic signs enabled
+- `scroll_refresh_with_signs`: scroll refresh cost while reusing sign cache
+- `full_refresh_stress_signs`: full refresh cost with dense signs and multiple
+  regex-scanning collectors
+- `restricted_refresh`: refresh cost once line limits force restricted mode
+
+Each metric record includes:
+
+- `total_s`: total wall-clock seconds across all iterations
+- `mean_s`: average wall-clock seconds per iteration
+- `mean_ms`: average wall-clock time per iteration; primary regression signal
+- `gc_mean_ms`: average GC time per iteration; useful when allocations grow
+- `gc_count`: total collections during the scenario
+- `overlay_count`: fringe overlay count after the benchmarked operation
+- `line_count`: buffer size used by the scenario
+- `sign_count`: synthetic sign count used by the scenario
+- `restricted`: whether the scenario ran in restricted mode
+
+Recommended regression gates:
+
+- Keep `scroll_refresh_plain` and `scroll_refresh_with_signs` stable first.
+  Those are the user-visible scrolling paths.
+- Use `full_refresh_stress_signs` as the upper-bound regression check.  It is
+  intentionally hostile and should land in the seconds range with the default
+  stress profile on typical developer machines.
+- Watch `gc_mean_ms` together with `mean_ms`.  If both rise, the change likely
+  adds allocation churn.
+- Track `overlay_count` to catch accidental over-rendering.
+- Compare JSON outputs between commits instead of relying on one absolute
+  number from a single run.
