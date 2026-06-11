@@ -482,32 +482,33 @@ STATE should be non-nil to enable, nil to disable, or `:toggle' to toggle."
 (defun scrollview--collect-sign-items (window &optional groups)
   "Collect visible sign items for WINDOW.
 GROUPS may be nil, a symbol, or a list of symbols."
-  (let ((groups (cond
-                 ((null groups) nil)
-                 ((listp groups) (mapcar #'scrollview--normalize-group groups))
-                 (t (list (scrollview--normalize-group groups)))))
-        (buffer-lines (with-current-buffer (window-buffer window)
-                        (scrollview--line-count)))
-        items)
-    (unless (with-current-buffer (window-buffer window)
-              (scrollview--restricted-p))
-      (maphash
-       (lambda (_id spec)
-         (let ((group (scrollview--sign-spec-group spec)))
-           (when (and (scrollview-sign-group-active-p group)
-                      (or (null groups)
-                          (memq 'all groups)
-                          (memq group groups))
-                      (or (not (scrollview--sign-spec-current-only spec))
-                          (eq window (selected-window))))
-             (with-current-buffer (window-buffer window)
+  (let* ((groups (cond
+                  ((null groups) nil)
+                  ((listp groups) (mapcar #'scrollview--normalize-group groups))
+                  (t (list (scrollview--normalize-group groups)))))
+         (buffer (window-buffer window))
+         (selected (selected-window))
+         buffer-lines
+         items)
+    (with-current-buffer buffer
+      (setq buffer-lines (scrollview--line-count))
+      (unless (scrollview--restricted-p)
+        (maphash
+         (lambda (_id spec)
+           (let ((group (scrollview--sign-spec-group spec)))
+             (when (and (scrollview-sign-group-active-p group)
+                        (or (null groups)
+                            (memq 'all groups)
+                            (memq group groups))
+                        (or (not (scrollview--sign-spec-current-only spec))
+                            (eq window selected)))
                (dolist (line (ignore-errors
                                 (funcall (scrollview--sign-spec-collector spec)
                                          window)))
                  (when-let ((line (scrollview--normalize-line
                                    line buffer-lines)))
-                   (push (list :line line :spec spec) items)))))))
-       scrollview--sign-specs))
+                   (push (list :line line :spec spec) items))))))
+         scrollview--sign-specs)))
     (nreverse items)))
 
 (defun scrollview--sign-cache-token (window)
@@ -542,6 +543,13 @@ matches.  Fresh collections always update the cache."
       (and (= (plist-get new :priority) (plist-get old :priority))
            (< (plist-get new :order) (plist-get old :order)))))
 
+(defun scrollview--slot-params-better-p (priority order old)
+  "Return non-nil if PRIORITY and ORDER should replace OLD."
+  (or (null old)
+      (> priority (plist-get old :priority))
+      (and (= priority (plist-get old :priority))
+           (< order (plist-get old :order)))))
+
 (defun scrollview--put-slot (slots row slot)
   "Put SLOT into SLOTS at ROW if it has higher priority."
   (let ((old (aref slots row)))
@@ -574,24 +582,27 @@ matches.  Fresh collections always update the cache."
       (let* ((line (plist-get item :line))
              (spec (plist-get item :spec))
              (row (scrollview--line-to-row line track-lines buffer-lines))
-             (highlighted (and (<= thumb-top row)
-                               (< row (+ thumb-top thumb-size)))))
-        (scrollview--put-slot
-         slots row
-         (list :type 'sign
-               :priority (scrollview--sign-spec-priority spec)
-               :order (scrollview--sign-spec-id spec)
-               :bitmap (scrollview--sign-spec-bitmap spec)
-               :face (scrollview--sign-render-face
-                      (scrollview--sign-spec-face spec)
-                      highlighted)
-               :line line
-               :group (scrollview--sign-spec-group spec)
-               :variant (scrollview--sign-spec-variant spec)
-               :highlighted highlighted
-               :help-echo (format "scrollview %s sign at line %d"
-                                  (scrollview--sign-spec-group spec)
-                                  line)))))
+             (priority (scrollview--sign-spec-priority spec))
+             (order (scrollview--sign-spec-id spec))
+             (old (aref slots row)))
+        (when (scrollview--slot-params-better-p priority order old)
+          (let ((highlighted (and (<= thumb-top row)
+                                  (< row (+ thumb-top thumb-size)))))
+            (aset slots row
+                  (list :type 'sign
+                        :priority priority
+                        :order order
+                        :bitmap (scrollview--sign-spec-bitmap spec)
+                        :face (scrollview--sign-render-face
+                               (scrollview--sign-spec-face spec)
+                               highlighted)
+                        :line line
+                        :group (scrollview--sign-spec-group spec)
+                        :variant (scrollview--sign-spec-variant spec)
+                        :highlighted highlighted
+                        :help-echo (format "scrollview %s sign at line %d"
+                                           (scrollview--sign-spec-group spec)
+                                           line)))))))
     slots))
 
 (defun scrollview--overlay-position-at-point ()
