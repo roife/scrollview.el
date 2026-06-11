@@ -333,6 +333,23 @@ When STRING is non-nil, include it as the clicked string object."
       (should (eq (scrollview--sign-spec-bitmap spec)
                   'scrollview-keyword-H-bitmap)))))
 
+(ert-deftest scrollview-keyword-scan-propertizes-before-hl-todo-search ()
+  (scrollview-test--reset-state)
+  (with-temp-buffer
+    (insert "// TODO:\n")
+    (let ((hl-todo-keyword-faces '(("TODO" . "red")))
+          (prepared nil))
+      (cl-letf (((symbol-function 'scrollview--hl-todo-available-p)
+                 (lambda () t))
+                ((symbol-function 'syntax-propertize)
+                 (lambda (end) (setq prepared end)))
+                ((symbol-function 'hl-todo--search)
+                 (lambda (&optional _regexp bound _backward)
+                   (and prepared
+                        (re-search-forward "\\(\\(TODO\\):\\)" bound t)))))
+        (should (equal (scrollview--hl-todo-lines) '((todo 1))))
+        (should (= prepared (point-max)))))))
+
 (ert-deftest scrollview-spell-bitmap-is-tilde ()
   (scrollview-test--reset-state)
   (let ((scrollview-signs-on-startup '(spell))

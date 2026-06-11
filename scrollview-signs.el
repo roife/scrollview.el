@@ -263,6 +263,11 @@ literally with `search-forward'."
                                   match))
            return (scrollview--hl-todo-keyword-variant keyword)))
 
+(defun scrollview--ensure-syntax-propertized ()
+  "Ensure syntax properties are ready for full-buffer sign scans."
+  (ignore-errors
+    (syntax-propertize (point-max))))
+
 (defun scrollview--hl-todo-lines ()
   "Return hl-todo keyword lines grouped by variant."
   (scrollview--cached-collector-value
@@ -273,6 +278,7 @@ literally with `search-forward'."
    (lambda ()
      (let (lines)
        (when (scrollview--hl-todo-available-p)
+         (scrollview--ensure-syntax-propertized)
          (save-excursion
            (save-match-data
              (goto-char (point-min))
