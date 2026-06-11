@@ -79,6 +79,15 @@
              0 'display (overlay-get overlay 'after-string)))
           (gethash window scrollview--window-overlays)))
 
+(defun scrollview-test--mouse-event (window area row &optional string)
+  "Return a mouse-1 event for WINDOW AREA at zero-based ROW.
+When STRING is non-nil, include it as the clicked string object."
+  (let ((y (* row (frame-char-height (window-frame window)))))
+    (list 'mouse-1
+          (list window area (cons 0 y) 0
+                (and string (cons string 0))
+                nil))))
+
 (defun scrollview-test--face-state (face)
   "Return restorable FACE state."
   (list :inherit (face-attribute face :inherit nil 'default)
@@ -143,6 +152,11 @@
   (should (= (scrollview--line-to-row 50 10 100) 4))
   (should (= (scrollview--line-to-row 100 10 100) 9))
   (should (= (scrollview--line-to-row 200 10 100) 9)))
+
+(ert-deftest scrollview-row-to-line ()
+  (should (= (scrollview--row-to-line 0 10 100) 1))
+  (should (= (scrollview--row-to-line 9 10 100) 100))
+  (should (= (scrollview--row-to-line 20 10 100) 100)))
 
 (ert-deftest scrollview-position-info-clamps-track-at-eob ()
   (scrollview-test--with-displayed-buffer
@@ -654,6 +668,64 @@
         (scrollview-mode -1)
         (should-not (gethash (selected-window)
                              scrollview--window-overlays))))))
+
+(ert-deftest scrollview-click-jumps-from-fringe-row ()
+  (scrollview-test--reset-state)
+  (scrollview-test--with-displayed-buffer
+    (scrollview-test--insert-lines 100)
+    (goto-char (point-min))
+    (let ((scrollview-side 'right)
+          (scrollview-visibility 'overflow)
+          (scrollview-signs-on-startup nil)
+          (scrollview-line-limit -1)
+          (scrollview-byte-limit -1))
+      (cl-letf (((symbol-function 'scrollview--fringe-available-p)
+                 (lambda (_window) t))
+                ((symbol-function 'scrollview--window-line-height)
+                 (lambda (_window) 10)))
+        (scrollview-mode 1)
+        (scrollview-click
+         (scrollview-test--mouse-event
+          (selected-window) 'right-fringe 9))
+        (should (= (line-number-at-pos nil t) 100))))))
+
+(ert-deftest scrollview-click-on-sign-jumps-to-sign-line ()
+  (scrollview-test--reset-state)
+  (scrollview-test--with-displayed-buffer
+    (scrollview-test--insert-lines 100)
+    (goto-char (point-min))
+    (let ((scrollview-side 'right)
+          (scrollview-visibility 'info)
+          (scrollview-signs-on-startup nil)
+          (scrollview-line-limit -1)
+          (scrollview-byte-limit -1))
+      (cl-letf (((symbol-function 'scrollview--fringe-available-p)
+                 (lambda (_window) t))
+                ((symbol-function 'scrollview--window-line-height)
+                 (lambda (_window) 10)))
+        (scrollview-register-sign-group 'scrollview-test-click t)
+        (scrollview-register-sign-spec
+         :group 'scrollview-test-click
+         :variant 'mock
+         :priority 80
+         :bitmap 'scrollview-search-bitmap
+         :face 'scrollview-search-face
+         :collector (lambda (_window) '(75)))
+        (scrollview-mode 1)
+        (scrollview-refresh (selected-window))
+        (let ((string
+               (cl-loop for overlay in (gethash (selected-window)
+                                                scrollview--window-overlays)
+                        for string = (overlay-get overlay 'after-string)
+                        when (eq (get-text-property
+                                  0 'scrollview-target-type string)
+                                 'sign)
+                        return string)))
+          (should string)
+          (scrollview-click
+           (scrollview-test--mouse-event
+            (selected-window) 'right-fringe 0 string))
+          (should (= (line-number-at-pos nil t) 75)))))))
 
 (ert-deftest scrollview-custom-sign-navigation ()
   (scrollview-test--reset-state)

@@ -67,10 +67,16 @@ registration changes.
 - `scrollview-prev`
 - `scrollview-first`
 - `scrollview-last`
+- `scrollview-click`
 - `scrollview-legend`
 - `scrollview-enable-sign-group`
 - `scrollview-disable-sign-group`
 - `scrollview-toggle-sign-group`
+
+## Mouse
+
+Click the configured fringe side to jump to the corresponding document
+position.  Clicking a visible sign jumps to that sign's line.
 
 ## Built-In Signs
 
@@ -125,7 +131,7 @@ thumb background so the scrollbar remains visually continuous.
 
 ## Limitations
 
-- No mouse click or drag support in v1
+- No mouse drag support in v1
 - No childframe or text-area fallback
 - No multi-column sign overflow
 - Positioning uses simple line-based mapping; fold/wrap-accurate proper mode is

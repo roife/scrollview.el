@@ -86,6 +86,21 @@
 (defvar-local scrollview--line-count-cache nil
   "Buffer-local cache of the current line count.")
 
+(defvar scrollview--mouse-map
+  (let ((map (make-sparse-keymap)))
+    (define-key map [mouse-1] #'scrollview-click)
+    (define-key map [left-fringe mouse-1] #'scrollview-click)
+    (define-key map [right-fringe mouse-1] #'scrollview-click)
+    map)
+  "Keymap used on scrollview fringe display strings.")
+
+(defvar scrollview-mode-map
+  (let ((map (make-sparse-keymap)))
+    (define-key map [left-fringe mouse-1] #'scrollview-click)
+    (define-key map [right-fringe mouse-1] #'scrollview-click)
+    map)
+  "Keymap for `scrollview-mode'.")
+
 
 ;;; Utilities
 
@@ -286,6 +301,18 @@ BOTTOM-VISIBLE should be non-nil when point-max is visible."
            (max 0 (round (* (1- window-lines)
                             (/ (float (1- line))
                                (max 1 (1- buffer-lines))))))))))
+
+(defun scrollview--row-to-line (row window-lines buffer-lines)
+  "Map zero-based fringe ROW to a one-based document line."
+  (let* ((window-lines (max 1 window-lines))
+         (buffer-lines (max 1 buffer-lines))
+         (row (min (1- window-lines) (max 0 row))))
+    (if (<= window-lines 1)
+        1
+      (min buffer-lines
+           (max 1 (1+ (round (* (1- buffer-lines)
+                                (/ (float row)
+                                   (max 1 (1- window-lines)))))))))))
 
 (defun scrollview--position-info (window)
   "Return scrollbar position data for WINDOW."
@@ -567,8 +594,9 @@ matches.  Fresh collections always update the cache."
                                   line)))))
     slots))
 
-(defun scrollview--make-overlay-at-point (window slot)
-  "Make a fringe overlay for SLOT at point in WINDOW."
+(defun scrollview--make-overlay-at-point (window slot target-line)
+  "Make a fringe overlay for SLOT at point in WINDOW.
+TARGET-LINE is the line clicked by the mouse for this overlay."
   (let* ((pos (point))
          (pos (if (= pos (line-end-position))
                   pos
@@ -578,12 +606,20 @@ matches.  Fresh collections always update the cache."
                        'right-fringe)
                     ,(plist-get slot :bitmap)
                     ,(plist-get slot :face)))
-         (string (propertize "." 'display display))
+         (string (propertize "." 'display display
+                             'keymap scrollview--mouse-map
+                             'mouse-face 'highlight
+                             'scrollview-target-line target-line
+                             'scrollview-target-type
+                             (plist-get slot :type)))
          (overlay (make-overlay pos pos)))
     (overlay-put overlay 'after-string string)
     (overlay-put overlay 'window window)
     (overlay-put overlay 'priority scrollview-overlay-priority)
     (overlay-put overlay 'scrollview t)
+    (overlay-put overlay 'keymap scrollview--mouse-map)
+    (overlay-put overlay 'scrollview-target-line target-line)
+    (overlay-put overlay 'scrollview-target-type (plist-get slot :type))
     (overlay-put overlay 'help-echo (plist-get slot :help-echo))
     overlay))
 
@@ -617,7 +653,13 @@ valid."
                             (setq current-row row))
                        when slot
                        do (push (scrollview--make-overlay-at-point
-                                 window slot)
+                                 window slot
+                                 (or (plist-get slot :line)
+                                     (scrollview--row-to-line
+                                      row
+                                      (or (plist-get info :track-lines)
+                                          (plist-get info :window-lines))
+                                      (plist-get info :buffer-lines))))
                                 overlays))))
           (puthash window overlays scrollview--window-overlays))))))
 
@@ -719,6 +761,67 @@ the text for one redisplay frame before the debounced refresh corrects them."
               #'scrollview--window-size-change)
     (add-hook 'post-command-hook #'scrollview--post-command)))
 
+
+;;; Mouse navigation
+
+(defun scrollview--fringe-area ()
+  "Return the fringe area symbol for `scrollview-side'."
+  (if (eq scrollview-side 'left) 'left-fringe 'right-fringe))
+
+(defun scrollview--event-row (position)
+  "Return zero-based window row for mouse POSITION."
+  (when-let ((row (cdr-safe (posn-col-row position))))
+    (and (numberp row) (max 0 (truncate row)))))
+
+(defun scrollview--clickable-info (window)
+  "Return position info when WINDOW currently displays scrollview."
+  (when (scrollview--window-eligible-p window)
+    (let* ((info (scrollview--position-info window))
+           (sign-items (scrollview--collect-sign-items-cached window t)))
+      (when (scrollview--should-render-p info sign-items)
+        info))))
+
+(defun scrollview--event-target-line (window position)
+  "Return document line corresponding to mouse POSITION in WINDOW."
+  (when-let* ((info (scrollview--clickable-info window))
+              (row (scrollview--event-row position))
+              (track-lines (or (plist-get info :track-lines)
+                               (plist-get info :window-lines)))
+              (buffer-lines (plist-get info :buffer-lines)))
+    (scrollview--row-to-line row track-lines buffer-lines)))
+
+(defun scrollview--goto-line (window line &optional set-start)
+  "Select WINDOW and move point to one-based LINE.
+When SET-START is non-nil, also make LINE the window start."
+  (select-window window)
+  (with-current-buffer (window-buffer window)
+    (let ((line (min (scrollview--line-count) (max 1 line))))
+      (goto-char (point-min))
+      (forward-line (1- line))
+      (when set-start
+        (set-window-start window (point) t)))))
+
+;;;###autoload
+(defun scrollview-click (event)
+  "Jump to the scrollview position clicked by mouse EVENT."
+  (interactive "e")
+  (let* ((position (event-start event))
+         (window (posn-window position))
+         (area (posn-area position)))
+    (if (and (window-live-p window)
+             (eq area (with-current-buffer (window-buffer window)
+                        (scrollview--fringe-area))))
+        (with-current-buffer (window-buffer window)
+          (let* ((line (or (mouse-posn-property
+                            position 'scrollview-target-line)
+                           (scrollview--event-target-line window position)))
+                 (type (mouse-posn-property
+                        position 'scrollview-target-type)))
+            (if line
+                (scrollview--goto-line window line (not (eq type 'sign)))
+              (mouse-set-point event))))
+      (mouse-set-point event))))
+
 ;;; Navigation and legend
 
 (defun scrollview--visible-sign-lines (&optional groups window)
@@ -741,13 +844,13 @@ LOCATION is one of `next', `prev', `first', or `last'."
     (let ((target
            (pcase location
              ('first (car lines))
-             ('last (seq-last lines))
+             ('last (car (last lines)))
              ('next (or (nth (1- count)
                              (seq-filter
                               (lambda (line) (> line current)) lines))
                         (and scrollview-wrap-navigation
                              (nth (mod (1- count) (length lines)) lines))
-                        (seq-last lines)))
+                        (car (last lines))))
              ('prev (let ((previous
                            (nreverse
                             (seq-filter
@@ -826,6 +929,7 @@ When GROUPS is non-nil, only those sign groups are considered."
   "Display a fringe scrollbar and document signs in the current buffer."
   :lighter " sv"
   :group 'scrollview
+  :keymap scrollview-mode-map
   (if scrollview-mode
       (progn
         (scrollview--initialize-builtins)
