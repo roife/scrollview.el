@@ -67,6 +67,31 @@
   (setq scrollview--spell-state-generation 0)
   (setq scrollview--vc-state-generation 0))
 
+(ert-deftest scrollview-margin-local-mode-restores-global-area ()
+  (let ((original-area scrollview-area))
+    (unwind-protect
+        (progn
+          (setq scrollview-area 'fringe)
+          (with-temp-buffer
+            (scrollview-margin-local-mode 1)
+            (should scrollview-margin-local-mode)
+            (should (local-variable-p 'scrollview-area))
+            (should (eq scrollview-area 'margin))
+            (scrollview-margin-local-mode -1)
+            (should-not scrollview-margin-local-mode)
+            (should-not (local-variable-p 'scrollview-area))
+            (should (eq scrollview-area 'fringe))))
+      (setq scrollview-area original-area))))
+
+(ert-deftest scrollview-margin-local-mode-restores-local-area ()
+  (with-temp-buffer
+    (setq-local scrollview-area 'fringe)
+    (scrollview-margin-local-mode 1)
+    (should (eq scrollview-area 'margin))
+    (scrollview-margin-local-mode -1)
+    (should (local-variable-p 'scrollview-area))
+    (should (eq scrollview-area 'fringe))))
+
 (defun scrollview-test--insert-lines (count &optional prefix)
   "Insert COUNT lines using PREFIX."
   (dotimes (i count)
@@ -775,6 +800,53 @@ When STRING is non-nil, include it as the clicked string object."
               (should (equal (window-margins window) original-margins)))
           (set-window-margins window (car original-margins)
                               (cdr original-margins)))))))
+
+(ert-deftest scrollview-margin-local-mode-switches-active-buffer ()
+  (scrollview-test--reset-state)
+  (let ((original-area scrollview-area))
+    (unwind-protect
+        (progn
+          (setq scrollview-area 'fringe)
+          (scrollview-test--with-displayed-buffer
+            (scrollview-test--insert-lines 200)
+            (goto-char (point-min))
+            (let ((window (selected-window))
+                  (scrollview-side 'right)
+                  (scrollview-visibility 'overflow)
+                  (scrollview-signs-on-startup nil)
+                  (scrollview-line-limit -1)
+                  (scrollview-byte-limit -1))
+              (cl-letf (((symbol-function 'scrollview--fringe-available-p)
+                         (lambda (_window) t)))
+                (let ((original-margins (window-margins window)))
+                  (unwind-protect
+                      (progn
+                        (scrollview-mode 1)
+                        (scrollview-refresh window)
+                        (should (cl-some
+                                 (lambda (display)
+                                   (eq (car display) 'right-fringe))
+                                 (scrollview-test--overlay-displays window)))
+                        (scrollview-margin-local-mode 1)
+                        (should (eq scrollview-area 'margin))
+                        (should (>= (or (cdr (window-margins window)) 0) 1))
+                        (should (cl-some
+                                 (lambda (display)
+                                   (equal (car display)
+                                          '(margin right-margin)))
+                                 (scrollview-test--overlay-displays window)))
+                        (scrollview-margin-local-mode -1)
+                        (should (eq scrollview-area 'fringe))
+                        (should (equal (window-margins window)
+                                       original-margins))
+                        (should (cl-some
+                                 (lambda (display)
+                                   (eq (car display) 'right-fringe))
+                                 (scrollview-test--overlay-displays window))))
+                    (scrollview-mode -1)
+                    (set-window-margins window (car original-margins)
+                                        (cdr original-margins)))))))
+      (setq scrollview-area original-area)))))
 
 (ert-deftest scrollview-click-jumps-from-margin-row ()
   (scrollview-test--reset-state)

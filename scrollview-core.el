@@ -20,6 +20,9 @@
 (defvar-local scrollview-mode nil
   "Non-nil when `scrollview-mode' is enabled.")
 
+(defvar-local scrollview-margin--saved-area nil
+  "Saved `scrollview-area' state before `scrollview-margin-local-mode'.")
+
 ;;; Internal state
 
 (cl-defstruct (scrollview--sign-spec
@@ -1108,6 +1111,44 @@ When GROUPS is non-nil, only those sign groups are considered."
   "Enable `scrollview-mode' in eligible buffers."
   (unless (or (minibufferp) (scrollview--excluded-mode-p))
     (scrollview-mode 1)))
+
+(defun scrollview--refresh-current-buffer-windows ()
+  "Refresh scrollview windows showing the current buffer."
+  (when (bound-and-true-p scrollview-mode)
+    (dolist (window (get-buffer-window-list (current-buffer) nil t))
+      (scrollview-refresh window))))
+
+;;;###autoload
+(define-minor-mode scrollview-margin-local-mode
+  "Display `scrollview-mode' indicators on the margin in the current buffer."
+  :lighter ""
+  :group 'scrollview
+  (if scrollview-margin-local-mode
+      (progn
+        (unless scrollview-margin--saved-area
+          (setq-local scrollview-margin--saved-area
+                      (list :local-p (local-variable-p 'scrollview-area)
+                            :value scrollview-area)))
+        (setq-local scrollview-area 'margin))
+    (when scrollview-margin--saved-area
+      (let ((local-p (plist-get scrollview-margin--saved-area :local-p))
+            (value (plist-get scrollview-margin--saved-area :value)))
+        (if local-p
+            (setq-local scrollview-area value)
+          (kill-local-variable 'scrollview-area)))
+      (kill-local-variable 'scrollview-margin--saved-area)))
+  (scrollview--refresh-current-buffer-windows))
+
+(defun scrollview--turn-on-margin ()
+  "Enable `scrollview-margin-local-mode' in suitable buffers."
+  (unless (minibufferp)
+    (scrollview-margin-local-mode 1)))
+
+;;;###autoload
+(define-globalized-minor-mode scrollview-margin-mode
+  scrollview-margin-local-mode scrollview--turn-on-margin
+  :group 'scrollview
+  :lighter "")
 
 ;;;###autoload
 (define-minor-mode scrollview-mode

@@ -47,6 +47,12 @@ Common alternatives:
 ;; Use one-column margin indicators in terminal frames.
 (setq scrollview-area 'margin
       scrollview-side 'right)
+
+;; Use margin indicators in the current buffer only.
+(scrollview-margin-local-mode 1)
+
+;; Make new and existing buffers use margin indicators by default.
+(scrollview-margin-mode 1)
 ```
 
 ### Options
@@ -102,6 +108,8 @@ Enable, disable, or toggle groups at runtime:
 | --- | --- |
 | `scrollview-mode` | Toggle scrollview in the current buffer. |
 | `global-scrollview-mode` | Toggle scrollview for eligible buffers. |
+| `scrollview-margin-local-mode` | Use margin indicators in the current buffer. |
+| `scrollview-margin-mode` | Use margin indicators in all suitable buffers. |
 | `scrollview-refresh` | Rebuild rendered overlays. |
 | `scrollview-next` | Jump to the next visible sign. |
 | `scrollview-prev` | Jump to the previous visible sign. |
