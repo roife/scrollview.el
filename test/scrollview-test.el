@@ -813,8 +813,7 @@ When STRING is non-nil, include it as the clicked string object."
           (scrollview-visibility 'overflow)
           (scrollview-signs-on-startup nil)
           (scrollview-line-limit -1)
-          (scrollview-byte-limit -1)
-          (scrollview-margin-width 1))
+          (scrollview-byte-limit -1))
       (let ((original-margins (window-margins window)))
         (unwind-protect
             (progn

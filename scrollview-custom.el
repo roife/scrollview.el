@@ -33,11 +33,6 @@ The value must be either `right' or `left'."
                  (const :tag "Left side" left))
   :group 'scrollview)
 
-(defcustom scrollview-margin-width 1
-  "Minimum window margin width used when `scrollview-area' is `margin'."
-  :type 'natnum
-  :group 'scrollview)
-
 (defcustom scrollview-visibility 'always
   "When scrollview overlays should be shown.
 `overflow' shows scrollview only when the buffer is not fully visible.

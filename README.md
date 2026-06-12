@@ -55,7 +55,6 @@ Common alternatives:
 | --- | --- | --- |
 | `scrollview-area` | `fringe` | Display area.  Use `fringe` for bitmap indicators or `margin` for terminal-friendly text indicators. |
 | `scrollview-side` | `right` | Display side.  Use `right` or `left`. |
-| `scrollview-margin-width` | `1` | Minimum margin width allocated when `scrollview-area` is `margin`. |
 | `scrollview-visibility` | `always` | `always`, `overflow`, or `info`.  `info` shows indicators when the buffer overflows or signs exist. |
 | `scrollview-current-window-only` | `nil` | Show only in the selected window. |
 | `scrollview-excluded-modes` | `(image-mode doc-view-mode pdf-view-mode)` | Major modes, including derived modes, where scrollview is disabled. |

@@ -215,13 +215,9 @@ The foreground is synchronized from diff faces, with an error fallback."
 (defun scrollview--selection-color ()
   "Return the best available color for the current selection."
   (cl-labels ((color (face attribute)
-                (let ((value (face-attribute face attribute nil t)))
-                  (when (scrollview--usable-color-p value)
-                    value))))
+                (scrollview--face-color face attribute)))
     (or (color 'region :background)
-        (color 'highlight :background)
-        (color 'region :foreground)
-        (color 'highlight :foreground))))
+        (color 'highlight :background))))
 
 (defun scrollview--usable-color-p (color)
   "Return non-nil if COLOR is suitable for a fringe face."
@@ -233,9 +229,7 @@ The foreground is synchronized from diff faces, with an error fallback."
 (defun scrollview--sync-thumb-face (&rest _)
   "Synchronize the scrollbar thumb with the current selection color."
   (let* ((color (scrollview--selection-color))
-         (state (if (and color (not (eq color 'unspecified)))
-                    (list :color color)
-                  (list :fallback t))))
+         (state (if color (list :color color) (list :fallback t))))
     (unless (equal state scrollview--thumb-face-state)
       (setq scrollview--thumb-face-state state)
       (if (plist-get state :color)
@@ -251,21 +245,11 @@ The foreground is synchronized from diff faces, with an error fallback."
                             :inverse-video t))
       (clrhash scrollview--sign-render-face-cache))))
 
-(defun scrollview--face-color (face attributes)
-  "Return FACE color from ATTRIBUTES, honoring inheritance."
-  (when (facep face)
-    (cl-loop for attribute in attributes
-             for value = (face-attribute face attribute nil t)
-             when (scrollview--usable-color-p value)
-             return value)))
-
-(defun scrollview--face-direct-color (face attributes)
-  "Return FACE color from ATTRIBUTES without inherited values."
-  (when (facep face)
-    (cl-loop for attribute in attributes
-             for value = (face-attribute face attribute nil nil)
-             when (scrollview--usable-color-p value)
-             return value)))
+(defun scrollview--face-color (face attribute)
+  "Return FACE color from ATTRIBUTE, honoring inheritance."
+  (let ((value (face-attribute face attribute nil t)))
+    (when (scrollview--usable-color-p value)
+      value)))
 
 (defun scrollview--face-underline-color (face)
   "Return FACE underline color, if any."
@@ -282,14 +266,14 @@ The foreground is synchronized from diff faces, with an error fallback."
 (defun scrollview--diagnostic-source-color (faces)
   "Return the best fringe color from diagnostic source FACES."
   (cl-loop for face in faces
-           thereis (or (scrollview--face-color face '(:foreground))
+           thereis (or (scrollview--face-color face :foreground)
                        (scrollview--face-underline-color face)
-                       (scrollview--face-color face '(:background)))))
+                       (scrollview--face-color face :background))))
 
 (defun scrollview--foreground-source-color (faces)
   "Return the best non-background source color from FACES."
   (cl-loop for face in faces
-           thereis (or (scrollview--face-color face '(:foreground))
+           thereis (or (scrollview--face-color face :foreground)
                        (scrollview--face-underline-color face))))
 
 (defun scrollview--sync-diagnostic-faces (&rest _)
@@ -351,8 +335,7 @@ The foreground is synchronized from diff faces, with an error fallback."
   "Return the best foreground color for rendering sign FACE.
 Highlight-style faces often carry their visible color in the background, so
 explicit sign colors are preferred before inherited highlight backgrounds."
-  (or (scrollview--face-direct-color face '(:foreground :background))
-      (scrollview--face-color face '(:background :foreground))
+  (or (scrollview--face-color face :foreground)
       (let ((foreground (face-foreground 'default nil t)))
         (when (scrollview--usable-color-p foreground)
           foreground))
@@ -360,7 +343,7 @@ explicit sign colors are preferred before inherited highlight backgrounds."
 
 (defun scrollview--thumb-background ()
   "Return the current scrollbar thumb background color."
-  (or (scrollview--face-color 'scrollview-thumb-face '(:background :foreground))
+  (or (scrollview--face-color 'scrollview-thumb-face :background)
       (scrollview--selection-color)
       'unspecified))
 

@@ -213,8 +213,7 @@ overlays."
 (defun scrollview--ensure-window-margins (window)
   "Ensure WINDOW has enough margin space for scrollview."
   (when (and (window-live-p window)
-             (scrollview--margin-area-p)
-             (> scrollview-margin-width 0))
+             (scrollview--margin-area-p))
     (unless (gethash window scrollview--window-margins)
       (puthash window (scrollview--current-window-margins window)
                scrollview--window-margins))
@@ -225,11 +224,9 @@ overlays."
            (right-width saved-right))
       (pcase scrollview-side
         ('left
-         (setq left-width (max (or saved-left 0)
-                               scrollview-margin-width)))
+         (setq left-width (max (or saved-left 0) 1)))
         (_
-         (setq right-width (max (or saved-right 0)
-                                scrollview-margin-width))))
+         (setq right-width (max (or saved-right 0) 1))))
       (set-window-margins window left-width right-width))))
 
 (defun scrollview--restore-window-margins (window)
