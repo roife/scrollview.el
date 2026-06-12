@@ -29,6 +29,7 @@
 (declare-function symbol-overlay-get-list "symbol-overlay" (&optional index symbol))
 
 (defvar bookmark-alist)
+(defvar eglot--highlights)
 (defvar highlight-symbol)
 (defvar highlight-symbol-keyword-alist)
 (defvar hl-todo-keyword-faces)
@@ -38,6 +39,12 @@
 
 (defvar scrollview--bookmark-state-generation 0
   "Generation incremented after bookmark updates.")
+
+(defvar-local scrollview--eglot-highlight-state-generation 0
+  "Buffer-local generation incremented after Eglot highlight updates.")
+
+(defvar-local scrollview--eglot-highlight-token nil
+  "Buffer-local token for the last observed Eglot highlight overlays.")
 
 (defvar-local scrollview--highlight-symbol-state-generation 0
   "Buffer-local generation incremented after highlight-symbol updates.")
@@ -355,6 +362,59 @@ literally with `search-forward'."
   "Collect bookmark lines for the current buffer."
   (scrollview--bookmark-lines))
 
+(defun scrollview--eglot-available-p ()
+  "Return non-nil when Eglot highlight state may be present."
+  (or (boundp 'eglot--highlights)
+      (facep 'eglot-highlight-symbol-face)))
+
+(defun scrollview--face-includes-p (face target)
+  "Return non-nil when FACE includes TARGET."
+  (cond
+   ((eq face target) t)
+   ((consp face)
+    (cl-some (lambda (entry)
+               (scrollview--face-includes-p entry target))
+             face))))
+
+(defun scrollview--eglot-highlight-overlays ()
+  "Return active Eglot document-highlight overlays for the current buffer."
+  (when (scrollview--eglot-available-p)
+    (let ((overlays
+           (append
+            (when (and (boundp 'eglot--highlights)
+                       (listp eglot--highlights))
+              eglot--highlights)
+            (seq-filter
+             (lambda (overlay)
+               (scrollview--face-includes-p
+                (overlay-get overlay 'face)
+                'eglot-highlight-symbol-face))
+             (overlays-in (point-min) (point-max))))))
+      (seq-uniq (seq-filter #'overlayp overlays) #'eq))))
+
+(defun scrollview--eglot-highlight-token-value (overlays)
+  "Return a cache token for Eglot highlight OVERLAYS."
+  (mapcar (lambda (overlay)
+            (list (overlay-start overlay)
+                  (overlay-end overlay)
+                  (overlay-get overlay 'face)))
+          overlays))
+
+(defun scrollview--eglot-highlight-lines ()
+  "Return lines highlighted by Eglot documentHighlight overlays."
+  (let ((overlays (scrollview--eglot-highlight-overlays)))
+    (scrollview--cached-collector-value
+     'eglot
+     (list :tick (buffer-chars-modified-tick)
+           :generation scrollview--eglot-highlight-state-generation
+           :overlays (scrollview--eglot-highlight-token-value overlays))
+     (lambda ()
+       (scrollview--overlay-lines overlays)))))
+
+(defun scrollview--collect-eglot-highlight-lines (_window)
+  "Collect Eglot document-highlight lines."
+  (scrollview--eglot-highlight-lines))
+
 (defun scrollview--conflict-lines ()
   "Return smerge conflict marker lines as a plist."
   (scrollview--cached-collector-value
@@ -619,6 +679,16 @@ literally with `search-forward'."
      :collector #'scrollview--collect-bookmark-lines)
 
     (scrollview-register-sign-group
+     'eglot (scrollview--startup-sign-enabled-p 'eglot))
+    (scrollview-register-sign-spec
+     :group 'eglot
+     :variant 'highlight
+     :priority 38
+     :bitmap 'scrollview-search-bitmap
+     :face 'scrollview-eglot-face
+     :collector #'scrollview--collect-eglot-highlight-lines)
+
+    (scrollview-register-sign-group
      'diagnostics (scrollview--startup-sign-enabled-p 'diagnostics))
     (scrollview-register-sign-spec
      :group 'diagnostics
@@ -713,10 +783,25 @@ literally with `search-forward'."
 
     (add-hook 'isearch-update-post-hook #'scrollview--after-isearch-update)
     (add-hook 'isearch-mode-end-hook #'scrollview--after-isearch-end)
+    (add-hook 'post-command-hook #'scrollview--after-eglot-post-command)
     (unless (advice-member-p #'scrollview--after-lazy-highlight-cleanup
                              'lazy-highlight-cleanup)
       (advice-add 'lazy-highlight-cleanup
                   :after #'scrollview--after-lazy-highlight-cleanup))))
+
+
+(defun scrollview--after-eglot-post-command ()
+  "Refresh Eglot signs when document-highlight overlays change."
+  (when (and (bound-and-true-p scrollview-mode)
+             (scrollview-sign-group-active-p 'eglot)
+             (scrollview--eglot-available-p))
+    (let* ((overlays (scrollview--eglot-highlight-overlays))
+           (token (scrollview--eglot-highlight-token-value overlays)))
+      (unless (equal token scrollview--eglot-highlight-token)
+        (setq scrollview--eglot-highlight-token token)
+        (cl-incf scrollview--eglot-highlight-state-generation)
+        (scrollview--invalidate-buffer-sign-cache)
+        (scrollview--schedule-buffer-refresh)))))
 
 
 (defun scrollview--after-highlight-symbol-update (&rest _)

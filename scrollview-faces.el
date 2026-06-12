@@ -50,6 +50,11 @@ scrollview is loaded and after themes are enabled."
   "Face for bookmark signs."
   :group 'scrollview)
 
+(defface scrollview-eglot-face
+  '((t (:inherit (eglot-highlight-symbol-face highlight))))
+  "Face for Eglot highlight signs."
+  :group 'scrollview)
+
 (defface scrollview-diagnostic-error-face
   '((t (:inherit flymake-error)))
   "Face for diagnostic error signs."

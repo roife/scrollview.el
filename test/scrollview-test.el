@@ -6,6 +6,7 @@
 (require 'ert)
 (require 'scrollview)
 
+(defvar eglot--highlights nil)
 (defvar flycheck-current-errors nil)
 (defvar highlight-symbol nil)
 (defvar highlight-symbol-keyword-alist nil)
@@ -27,6 +28,7 @@
   (remove-hook 'window-size-change-functions
                #'scrollview--window-size-change)
   (remove-hook 'post-command-hook #'scrollview--post-command)
+  (remove-hook 'post-command-hook #'scrollview--after-eglot-post-command)
   (advice-remove 'lazy-highlight-cleanup
                  #'scrollview--after-lazy-highlight-cleanup)
   (setq scrollview--global-hooks-installed nil)
@@ -45,6 +47,8 @@
   (setq scrollview--refreshing nil)
   (setq scrollview--last-search-pattern nil)
   (setq scrollview--last-search-regexp nil)
+  (setq scrollview--eglot-highlight-state-generation 0)
+  (setq scrollview--eglot-highlight-token nil)
   (setq scrollview--highlight-symbol-state-generation 0)
   (setq scrollview--symbol-overlay-state-generation 0)
   (setq scrollview--diagnostic-state-generation 0)
@@ -286,15 +290,15 @@ When STRING is non-nil, include it as the clicked string object."
   (let ((scrollview-signs-on-startup '(search diagnostics)))
     (scrollview--initialize-builtins)
     (should (scrollview-sign-group-active-p 'diagnostics))
-    (dolist (group '(highlight-symbol symbol-overlay bookmarks conflicts
-                                      keywords spell vc))
+    (dolist (group '(highlight-symbol symbol-overlay bookmarks eglot
+                                      conflicts keywords spell vc))
       (should-not (scrollview-sign-group-active-p group)))))
 
 (ert-deftest scrollview-startup-all-symbol-enables-all-groups ()
   (scrollview-test--reset-state)
   (let ((scrollview-signs-on-startup 'all))
     (scrollview--initialize-builtins)
-    (dolist (group '(search highlight-symbol symbol-overlay bookmarks
+    (dolist (group '(search highlight-symbol symbol-overlay bookmarks eglot
                             diagnostics conflicts keywords spell vc))
       (should (scrollview-sign-group-active-p group)))))
 
@@ -302,8 +306,8 @@ When STRING is non-nil, include it as the clicked string object."
   (scrollview-test--reset-state)
   (let ((scrollview-signs-on-startup nil))
     (scrollview--initialize-builtins)
-    (dolist (group '(highlight-symbol symbol-overlay bookmarks conflicts
-                                      keywords spell vc))
+    (dolist (group '(highlight-symbol symbol-overlay bookmarks eglot
+                                      conflicts keywords spell vc))
       (should (memq group (scrollview--sign-group-list))))
     (should-not (memq 'marks (scrollview--sign-group-list)))))
 
@@ -1040,6 +1044,50 @@ When STRING is non-nil, include it as the clicked string object."
             (should (equal (scrollview--collect-bookmark-lines nil)
                            '(1 3)))))
       (delete-file file))))
+
+(ert-deftest scrollview-eglot-collector-uses-highlight-overlays ()
+  (scrollview-test--reset-state)
+  (with-temp-buffer
+    (insert "alpha\nplain\nalpha\n")
+    (goto-char (point-min))
+    (let ((first (make-overlay (point-min) (line-end-position 1)))
+          (second (make-overlay (line-beginning-position 3)
+                                (line-end-position 3))))
+      (unwind-protect
+          (let ((eglot--highlights (list first second)))
+            (should (equal (scrollview--collect-eglot-highlight-lines nil)
+                           '(1 3))))
+        (delete-overlay first)
+        (delete-overlay second)))))
+
+(ert-deftest scrollview-eglot-post-command-refreshes-on-highlight-change ()
+  (scrollview-test--reset-state)
+  (with-temp-buffer
+    (insert "alpha\n")
+    (let ((scrollview-signs-on-startup '(eglot))
+          (invalidated nil)
+          (scheduled nil))
+      (scrollview--initialize-builtins)
+      (setq scrollview-mode t)
+      (let ((overlay (make-overlay (point-min) (line-end-position))))
+        (unwind-protect
+            (let ((eglot--highlights (list overlay)))
+              (cl-letf (((symbol-function
+                          'scrollview--invalidate-buffer-sign-cache)
+                         (lambda (&optional _buffer)
+                           (setq invalidated t)))
+                        ((symbol-function 'scrollview--schedule-buffer-refresh)
+                         (lambda (&optional _buffer)
+                           (setq scheduled t))))
+                (scrollview--after-eglot-post-command)
+                (should invalidated)
+                (should scheduled)
+                (setq invalidated nil
+                      scheduled nil)
+                (scrollview--after-eglot-post-command)
+                (should-not invalidated)
+                (should-not scheduled)))
+          (delete-overlay overlay))))))
 
 (ert-deftest scrollview-conflict-collector ()
   (scrollview-test--reset-state)
