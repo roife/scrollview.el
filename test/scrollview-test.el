@@ -29,6 +29,10 @@
                #'scrollview--window-size-change)
   (remove-hook 'post-command-hook #'scrollview--post-command)
   (remove-hook 'post-command-hook #'scrollview--after-eglot-post-command)
+  (remove-hook 'compilation-filter-hook
+               #'scrollview--after-compilation-update)
+  (remove-hook 'compilation-finish-functions
+               #'scrollview--after-compilation-update)
   (advice-remove 'lazy-highlight-cleanup
                  #'scrollview--after-lazy-highlight-cleanup)
   (setq scrollview--global-hooks-installed nil)
@@ -42,6 +46,7 @@
   (setq scrollview--diagnostic-face-state nil)
   (setq scrollview--vc-face-state nil)
   (setq scrollview--bookmark-state-generation 0)
+  (setq scrollview--compilation-state-generation 0)
   (setq scrollview--next-sign-id 0)
   (setq scrollview--builtins-initialized nil)
   (setq scrollview--refreshing nil)
@@ -221,6 +226,36 @@ When STRING is non-nil, include it as the clicked string object."
             (should (equal info-lines '(3)))
             (should (= flymake-calls 1))))))))
 
+(ert-deftest scrollview-compilation-collector-uses-parsed-messages ()
+  (scrollview-test--reset-state)
+  (require 'compile)
+  (let ((file (make-temp-file "scrollview-compilation"))
+        (source (generate-new-buffer " *scrollview-source*"))
+        (compilation (generate-new-buffer " *scrollview-compilation*")))
+    (unwind-protect
+        (progn
+          (with-current-buffer source
+            (setq buffer-file-name file)
+            (insert "one\ntwo\nthree\n"))
+          (with-current-buffer compilation
+            (compilation-mode)
+            (let ((inhibit-read-only t))
+              (insert (format "%s:2:1: error: bad\n" file))
+              (insert (format "%s:3:1: warning: warn\n" file))
+              (insert (format "%s:1:1: note: info\n" file))))
+          (with-current-buffer source
+            (should (equal (scrollview--collect-compilation-lines 'error)
+                           '(2)))
+            (should (equal (scrollview--collect-compilation-lines 'warning)
+                           '(3)))
+            (should (equal (scrollview--collect-compilation-lines 'info)
+                           '(1)))))
+      (when (buffer-live-p source)
+        (kill-buffer source))
+      (when (buffer-live-p compilation)
+        (kill-buffer compilation))
+      (delete-file file))))
+
 (ert-deftest scrollview-thumb-face-follows-region-background ()
   (let ((old-region-bg (face-attribute 'region :background nil 'default))
         (old-thumb-fg (face-attribute 'scrollview-thumb-face
@@ -290,7 +325,7 @@ When STRING is non-nil, include it as the clicked string object."
   (let ((scrollview-signs-on-startup '(search diagnostics)))
     (scrollview--initialize-builtins)
     (should (scrollview-sign-group-active-p 'diagnostics))
-    (dolist (group '(highlight-symbol symbol-overlay bookmarks eglot
+    (dolist (group '(highlight-symbol symbol-overlay bookmarks eglot compilation
                                       conflicts keywords spell vc))
       (should-not (scrollview-sign-group-active-p group)))))
 
@@ -299,14 +334,14 @@ When STRING is non-nil, include it as the clicked string object."
   (let ((scrollview-signs-on-startup 'all))
     (scrollview--initialize-builtins)
     (dolist (group '(search highlight-symbol symbol-overlay bookmarks eglot
-                            diagnostics conflicts keywords spell vc))
+                            diagnostics compilation conflicts keywords spell vc))
       (should (scrollview-sign-group-active-p group)))))
 
 (ert-deftest scrollview-builtins-register-new-sign-groups ()
   (scrollview-test--reset-state)
   (let ((scrollview-signs-on-startup nil))
     (scrollview--initialize-builtins)
-    (dolist (group '(highlight-symbol symbol-overlay bookmarks eglot
+    (dolist (group '(highlight-symbol symbol-overlay bookmarks eglot compilation
                                       conflicts keywords spell vc))
       (should (memq group (scrollview--sign-group-list))))
     (should-not (memq 'marks (scrollview--sign-group-list)))))

@@ -71,6 +71,7 @@ Restricted mode keeps the scrollbar and skips sign collection.
 | `bookmarks` | File bookmarks from `bookmark-alist` | `bookmark` |
 | `eglot` | Existing Eglot document-highlight overlays | `highlight` |
 | `diagnostics` | Flymake diagnostics and Flycheck errors when Flycheck is loaded | `error`, `warning`, `info` |
+| `compilation` | Parsed `compilation-mode` messages, excluding `grep-mode` buffers | `error`, `warning`, `info` |
 | `conflicts` | `smerge-mode` conflict markers | `top`, `middle`, `bottom` |
 | `keywords` | `hl-todo` keywords from `hl-todo-keyword-faces` | One variant per configured keyword |
 | `spell` | Flyspell overlays | `misspelled` |
