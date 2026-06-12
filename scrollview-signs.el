@@ -24,14 +24,20 @@
 (declare-function diff-hl-changes "diff-hl" ())
 (declare-function diff-hl-changes-from-buffer "diff-hl" (buf))
 (declare-function flyspell-overlay-p "flyspell" (overlay))
+(declare-function bookmark-get-filename "bookmark" (bookmark-name-or-record))
+(declare-function bookmark-get-position "bookmark" (bookmark-name-or-record))
 (declare-function symbol-overlay-get-list "symbol-overlay" (&optional index symbol))
 
+(defvar bookmark-alist)
 (defvar highlight-symbol)
 (defvar highlight-symbol-keyword-alist)
 (defvar hl-todo-keyword-faces)
 (defvar diff-hl-reference-revision)
 (defvar diff-hl-show-staged-changes)
 (defvar diff-hl-update-async)
+
+(defvar scrollview--bookmark-state-generation 0
+  "Generation incremented after bookmark updates.")
 
 (defvar-local scrollview--highlight-symbol-state-generation 0
   "Buffer-local generation incremented after highlight-symbol updates.")
@@ -299,6 +305,56 @@ literally with `search-forward'."
   "Collect lines highlighted by symbol-overlay."
   (scrollview--symbol-overlay-lines))
 
+(defun scrollview--same-file-p (left right)
+  "Return non-nil when LEFT and RIGHT name the same file."
+  (when (and (stringp left)
+             (stringp right))
+    (let ((left (expand-file-name left))
+          (right (expand-file-name right)))
+      (or (equal left right)
+          (ignore-errors (file-equal-p left right))))))
+
+(defun scrollview--bookmark-position-line (position)
+  "Return the line for bookmark POSITION in the current buffer."
+  (cond
+   ((markerp position)
+    (when (and (eq (marker-buffer position) (current-buffer))
+               (marker-position position))
+      (line-number-at-pos position t)))
+   ((integerp position)
+    (save-excursion
+      (goto-char (min (point-max) (max (point-min) position)))
+      (line-number-at-pos nil t)))))
+
+(defun scrollview--bookmark-lines ()
+  "Return bookmark lines for the current file buffer."
+  (let ((file (buffer-file-name)))
+    (scrollview--cached-collector-value
+     'bookmarks
+     (list :tick (buffer-chars-modified-tick)
+           :generation scrollview--bookmark-state-generation
+           :file file)
+     (lambda ()
+       (when (and file
+                  (require 'bookmark nil t)
+                  (boundp 'bookmark-alist))
+         (scrollview--dedupe-sorted-lines
+          (delq nil
+                (mapcar
+                 (lambda (bookmark)
+                   (when (scrollview--same-file-p
+                          file
+                          (ignore-errors
+                            (bookmark-get-filename bookmark)))
+                     (scrollview--bookmark-position-line
+                      (ignore-errors
+                        (bookmark-get-position bookmark)))))
+                 bookmark-alist))))))))
+
+(defun scrollview--collect-bookmark-lines (_window)
+  "Collect bookmark lines for the current buffer."
+  (scrollview--bookmark-lines))
+
 (defun scrollview--conflict-lines ()
   "Return smerge conflict marker lines as a plist."
   (scrollview--cached-collector-value
@@ -553,6 +609,16 @@ literally with `search-forward'."
      :collector #'scrollview--collect-symbol-overlay-lines)
 
     (scrollview-register-sign-group
+     'bookmarks (scrollview--startup-sign-enabled-p 'bookmarks))
+    (scrollview-register-sign-spec
+     :group 'bookmarks
+     :variant 'bookmark
+     :priority 75
+     :bitmap 'scrollview-sign-dot-bitmap
+     :face 'scrollview-bookmark-face
+     :collector #'scrollview--collect-bookmark-lines)
+
+    (scrollview-register-sign-group
      'diagnostics (scrollview--startup-sign-enabled-p 'diagnostics))
     (scrollview-register-sign-spec
      :group 'diagnostics
@@ -695,6 +761,29 @@ literally with `search-forward'."
                      #'scrollview--after-symbol-overlay-update function)))
       (advice-add function :after
                   #'scrollview--after-symbol-overlay-update))))
+
+
+(defun scrollview--after-bookmark-update (&rest _)
+  "Refresh scrollview signs after bookmark updates."
+  (cl-incf scrollview--bookmark-state-generation)
+  (when (scrollview-sign-group-active-p 'bookmarks)
+    (scrollview--invalidate-sign-cache)
+    (scrollview--schedule-refresh)))
+
+(with-eval-after-load 'bookmark
+  (dolist (function '(bookmark-set
+                      bookmark-set-no-overwrite
+                      bookmark-delete
+                      bookmark-delete-all
+                      bookmark-rename
+                      bookmark-relocate
+                      bookmark-load
+                      bookmark-bmenu-execute-deletions))
+    (when (and (fboundp function)
+               (not (advice-member-p
+                     #'scrollview--after-bookmark-update function)))
+      (advice-add function :after
+                  #'scrollview--after-bookmark-update))))
 
 
 (defun scrollview--after-diagnostics-update (&rest _)

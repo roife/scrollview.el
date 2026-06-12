@@ -45,6 +45,11 @@ scrollview is loaded and after themes are enabled."
   "Face for symbol-overlay signs."
   :group 'scrollview)
 
+(defface scrollview-bookmark-face
+  '((t (:inherit font-lock-constant-face)))
+  "Face for bookmark signs."
+  :group 'scrollview)
+
 (defface scrollview-diagnostic-error-face
   '((t (:inherit flymake-error)))
   "Face for diagnostic error signs."

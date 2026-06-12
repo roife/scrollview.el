@@ -39,6 +39,7 @@
   (setq scrollview--thumb-face-state nil)
   (setq scrollview--diagnostic-face-state nil)
   (setq scrollview--vc-face-state nil)
+  (setq scrollview--bookmark-state-generation 0)
   (setq scrollview--next-sign-id 0)
   (setq scrollview--builtins-initialized nil)
   (setq scrollview--refreshing nil)
@@ -285,7 +286,7 @@ When STRING is non-nil, include it as the clicked string object."
   (let ((scrollview-signs-on-startup '(search diagnostics)))
     (scrollview--initialize-builtins)
     (should (scrollview-sign-group-active-p 'diagnostics))
-    (dolist (group '(highlight-symbol symbol-overlay conflicts
+    (dolist (group '(highlight-symbol symbol-overlay bookmarks conflicts
                                       keywords spell vc))
       (should-not (scrollview-sign-group-active-p group)))))
 
@@ -293,15 +294,16 @@ When STRING is non-nil, include it as the clicked string object."
   (scrollview-test--reset-state)
   (let ((scrollview-signs-on-startup 'all))
     (scrollview--initialize-builtins)
-    (dolist (group '(search highlight-symbol symbol-overlay diagnostics conflicts
-                            keywords spell vc))
+    (dolist (group '(search highlight-symbol symbol-overlay bookmarks
+                            diagnostics conflicts keywords spell vc))
       (should (scrollview-sign-group-active-p group)))))
 
 (ert-deftest scrollview-builtins-register-new-sign-groups ()
   (scrollview-test--reset-state)
   (let ((scrollview-signs-on-startup nil))
     (scrollview--initialize-builtins)
-    (dolist (group '(highlight-symbol symbol-overlay conflicts keywords spell vc))
+    (dolist (group '(highlight-symbol symbol-overlay bookmarks conflicts
+                                      keywords spell vc))
       (should (memq group (scrollview--sign-group-list))))
     (should-not (memq 'marks (scrollview--sign-group-list)))))
 
@@ -1015,6 +1017,29 @@ When STRING is non-nil, include it as the clicked string object."
                            '(3))))
         (delete-overlay first)
         (delete-overlay second)))))
+
+(ert-deftest scrollview-bookmark-collector-uses-file-bookmarks ()
+  (scrollview-test--reset-state)
+  (require 'bookmark)
+  (let ((file (make-temp-file "scrollview-bookmark")))
+    (unwind-protect
+        (with-temp-buffer
+          (setq buffer-file-name file)
+          (insert "one\ntwo\nthree\n")
+          (let ((line-three (save-excursion
+                              (goto-char (point-min))
+                              (forward-line 2)
+                              (point)))
+                (bookmark-alist nil))
+            (setq bookmark-alist
+                  `(("first" . ((filename . ,file) (position . 1)))
+                    ("third" . ((filename . ,file)
+                                (position . ,line-three)))
+                    ("other" . ((filename . "/tmp/scrollview-other")
+                                (position . 1)))))
+            (should (equal (scrollview--collect-bookmark-lines nil)
+                           '(1 3)))))
+      (delete-file file))))
 
 (ert-deftest scrollview-conflict-collector ()
   (scrollview-test--reset-state)

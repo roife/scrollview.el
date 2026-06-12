@@ -68,6 +68,7 @@ Restricted mode keeps the scrollbar and skips sign collection.
 | `search` | Active isearch, or retained lazy-highlight overlays after isearch exits | `match` |
 | `highlight-symbol` | `highlight-symbol` highlighted regexps, when `highlight-symbol` is loaded | `match` |
 | `symbol-overlay` | `symbol-overlay` overlays, when `symbol-overlay` is loaded | `match` |
+| `bookmarks` | File bookmarks from `bookmark-alist` | `bookmark` |
 | `diagnostics` | Flymake diagnostics and Flycheck errors when Flycheck is loaded | `error`, `warning`, `info` |
 | `conflicts` | `smerge-mode` conflict markers | `top`, `middle`, `bottom` |
 | `keywords` | `hl-todo` keywords from `hl-todo-keyword-faces` | One variant per configured keyword |
