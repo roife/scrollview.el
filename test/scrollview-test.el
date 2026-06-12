@@ -45,6 +45,7 @@
   (setq scrollview--last-search-pattern nil)
   (setq scrollview--last-search-regexp nil)
   (setq scrollview--highlight-symbol-state-generation 0)
+  (setq scrollview--symbol-overlay-state-generation 0)
   (setq scrollview--diagnostic-state-generation 0)
   (setq scrollview--spell-state-generation 0)
   (setq scrollview--vc-state-generation 0))
@@ -284,14 +285,15 @@ When STRING is non-nil, include it as the clicked string object."
   (let ((scrollview-signs-on-startup '(search diagnostics)))
     (scrollview--initialize-builtins)
     (should (scrollview-sign-group-active-p 'diagnostics))
-    (dolist (group '(highlight-symbol conflicts keywords spell vc))
+    (dolist (group '(highlight-symbol symbol-overlay conflicts
+                                      keywords spell vc))
       (should-not (scrollview-sign-group-active-p group)))))
 
 (ert-deftest scrollview-startup-all-symbol-enables-all-groups ()
   (scrollview-test--reset-state)
   (let ((scrollview-signs-on-startup 'all))
     (scrollview--initialize-builtins)
-    (dolist (group '(search highlight-symbol diagnostics conflicts
+    (dolist (group '(search highlight-symbol symbol-overlay diagnostics conflicts
                             keywords spell vc))
       (should (scrollview-sign-group-active-p group)))))
 
@@ -299,7 +301,7 @@ When STRING is non-nil, include it as the clicked string object."
   (scrollview-test--reset-state)
   (let ((scrollview-signs-on-startup nil))
     (scrollview--initialize-builtins)
-    (dolist (group '(highlight-symbol conflicts keywords spell vc))
+    (dolist (group '(highlight-symbol symbol-overlay conflicts keywords spell vc))
       (should (memq group (scrollview--sign-group-list))))
     (should-not (memq 'marks (scrollview--sign-group-list)))))
 
@@ -992,6 +994,27 @@ When STRING is non-nil, include it as the clicked string object."
           (highlight-symbol nil))
       (cl-incf scrollview--highlight-symbol-state-generation)
       (should-not (scrollview--collect-highlight-symbol-lines nil)))))
+
+(ert-deftest scrollview-symbol-overlay-collector-uses-overlays ()
+  (scrollview-test--reset-state)
+  (with-temp-buffer
+    (insert "alpha\nplain\nalpha\n")
+    (goto-char (point-min))
+    (let ((first (make-overlay (point-min) (line-end-position 1)))
+          (second (make-overlay (line-beginning-position 3)
+                                (line-end-position 3))))
+      (unwind-protect
+          (progn
+            (overlay-put first 'symbol "alpha")
+            (overlay-put second 'symbol "alpha")
+            (should (equal (scrollview--collect-symbol-overlay-lines nil)
+                           '(1 3)))
+            (delete-overlay first)
+            (cl-incf scrollview--symbol-overlay-state-generation)
+            (should (equal (scrollview--collect-symbol-overlay-lines nil)
+                           '(3))))
+        (delete-overlay first)
+        (delete-overlay second)))))
 
 (ert-deftest scrollview-conflict-collector ()
   (scrollview-test--reset-state)

@@ -40,6 +40,11 @@ scrollview is loaded and after themes are enabled."
   "Face for highlight-symbol signs."
   :group 'scrollview)
 
+(defface scrollview-symbol-overlay-face
+  '((t (:inherit (symbol-overlay-default-face highlight))))
+  "Face for symbol-overlay signs."
+  :group 'scrollview)
+
 (defface scrollview-diagnostic-error-face
   '((t (:inherit flymake-error)))
   "Face for diagnostic error signs."

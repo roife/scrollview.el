@@ -24,6 +24,7 @@
 (declare-function diff-hl-changes "diff-hl" ())
 (declare-function diff-hl-changes-from-buffer "diff-hl" (buf))
 (declare-function flyspell-overlay-p "flyspell" (overlay))
+(declare-function symbol-overlay-get-list "symbol-overlay" (&optional index symbol))
 
 (defvar highlight-symbol)
 (defvar highlight-symbol-keyword-alist)
@@ -34,6 +35,9 @@
 
 (defvar-local scrollview--highlight-symbol-state-generation 0
   "Buffer-local generation incremented after highlight-symbol updates.")
+
+(defvar-local scrollview--symbol-overlay-state-generation 0
+  "Buffer-local generation incremented after symbol-overlay updates.")
 
 (defvar-local scrollview--vc-state-generation 0
   "Buffer-local generation incremented after diff-hl updates.")
@@ -251,6 +255,49 @@ literally with `search-forward'."
 (defun scrollview--collect-highlight-symbol-lines (_window)
   "Collect lines highlighted by highlight-symbol."
   (scrollview--highlight-symbol-lines))
+
+(defun scrollview--overlay-line (overlay)
+  "Return the one-based current-buffer line for OVERLAY."
+  (when (and (overlayp overlay)
+             (eq (overlay-buffer overlay) (current-buffer))
+             (overlay-start overlay))
+    (line-number-at-pos (overlay-start overlay) t)))
+
+(defun scrollview--overlay-lines (overlays)
+  "Return sorted unique current-buffer lines for OVERLAYS."
+  (scrollview--dedupe-sorted-lines
+   (delq nil (mapcar #'scrollview--overlay-line overlays))))
+
+(defun scrollview--symbol-overlay-overlays ()
+  "Return active symbol-overlay overlays for the current buffer."
+  (if (fboundp 'symbol-overlay-get-list)
+      (ignore-errors (symbol-overlay-get-list 0))
+    (seq-filter (lambda (overlay)
+                  (overlay-get overlay 'symbol))
+                (overlays-in (point-min) (point-max)))))
+
+(defun scrollview--symbol-overlay-token (overlays)
+  "Return a cache token for symbol-overlay OVERLAYS."
+  (mapcar (lambda (overlay)
+            (list (overlay-start overlay)
+                  (overlay-end overlay)
+                  (overlay-get overlay 'symbol)))
+          overlays))
+
+(defun scrollview--symbol-overlay-lines ()
+  "Return lines highlighted by symbol-overlay."
+  (let ((overlays (scrollview--symbol-overlay-overlays)))
+    (scrollview--cached-collector-value
+     'symbol-overlay
+     (list :tick (buffer-chars-modified-tick)
+           :generation scrollview--symbol-overlay-state-generation
+           :overlays (scrollview--symbol-overlay-token overlays))
+     (lambda ()
+       (scrollview--overlay-lines overlays)))))
+
+(defun scrollview--collect-symbol-overlay-lines (_window)
+  "Collect lines highlighted by symbol-overlay."
+  (scrollview--symbol-overlay-lines))
 
 (defun scrollview--conflict-lines ()
   "Return smerge conflict marker lines as a plist."
@@ -496,6 +543,16 @@ literally with `search-forward'."
      :collector #'scrollview--collect-highlight-symbol-lines)
 
     (scrollview-register-sign-group
+     'symbol-overlay (scrollview--startup-sign-enabled-p 'symbol-overlay))
+    (scrollview-register-sign-spec
+     :group 'symbol-overlay
+     :variant 'match
+     :priority 39
+     :bitmap 'scrollview-search-bitmap
+     :face 'scrollview-symbol-overlay-face
+     :collector #'scrollview--collect-symbol-overlay-lines)
+
+    (scrollview-register-sign-group
      'diagnostics (scrollview--startup-sign-enabled-p 'diagnostics))
     (scrollview-register-sign-spec
      :group 'diagnostics
@@ -615,6 +672,29 @@ literally with `search-forward'."
                      #'scrollview--after-highlight-symbol-update function)))
       (advice-add function :after
                   #'scrollview--after-highlight-symbol-update))))
+
+
+(defun scrollview--after-symbol-overlay-update (&rest _)
+  "Refresh scrollview signs after symbol-overlay updates."
+  (when (bound-and-true-p scrollview-mode)
+    (cl-incf scrollview--symbol-overlay-state-generation)
+    (scrollview--invalidate-buffer-sign-cache)
+    (scrollview--schedule-buffer-refresh)))
+
+(with-eval-after-load 'symbol-overlay
+  (dolist (function '(symbol-overlay-put
+                      symbol-overlay-put-all
+                      symbol-overlay-put-one
+                      symbol-overlay-remove
+                      symbol-overlay-remove-all
+                      symbol-overlay-remove-temp
+                      symbol-overlay-maybe-remove
+                      symbol-overlay-maybe-put-temp))
+    (when (and (fboundp function)
+               (not (advice-member-p
+                     #'scrollview--after-symbol-overlay-update function)))
+      (advice-add function :after
+                  #'scrollview--after-symbol-overlay-update))))
 
 
 (defun scrollview--after-diagnostics-update (&rest _)
