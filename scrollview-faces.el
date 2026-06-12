@@ -177,22 +177,22 @@ The foreground is synchronized from diff faces, with an error fallback."
   [0 0 0 96 48 24 12 0] nil nil 'center)
 
 (define-fringe-bitmap 'scrollview-keyword-todo-bitmap
-  [0 126 66 66 66 66 126 0] nil nil 'center)
+  [0 124 16 16 16 16 16 0] nil nil 'center)
 
 (define-fringe-bitmap 'scrollview-keyword-fixme-bitmap
-  [0 102 60 24 24 60 102 0] nil nil 'center)
+  [0 124 64 120 64 64 64 0] nil nil 'center)
 
 (define-fringe-bitmap 'scrollview-keyword-hack-bitmap
-  [0 12 24 126 24 48 96 0] nil nil 'center)
+  [0 68 68 124 68 68 68 0] nil nil 'center)
 
 (define-fringe-bitmap 'scrollview-keyword-note-bitmap
-  [0 124 68 68 92 64 124 0] nil nil 'center)
+  [0 68 100 84 76 68 68 0] nil nil 'center)
 
 (define-fringe-bitmap 'scrollview-keyword-bitmap
   [0 24 60 126 60 24 0 0] nil nil 'center)
 
 (defun scrollview--keyword-bitmap (variant)
-  "Return a semantic fringe bitmap symbol for keyword VARIANT."
+  "Return a fringe bitmap symbol for keyword VARIANT."
   (pcase variant
     ('todo 'scrollview-keyword-todo-bitmap)
     ('fixme 'scrollview-keyword-fixme-bitmap)
