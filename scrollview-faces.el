@@ -71,17 +71,17 @@ scrollview is loaded and after themes are enabled."
   :group 'scrollview)
 
 (defface scrollview-diagnostic-error-face
-  '((t (:inherit flymake-error)))
+  '((t (:inherit error)))
   "Face for diagnostic error signs."
   :group 'scrollview)
 
 (defface scrollview-diagnostic-warning-face
-  '((t (:inherit flymake-warning)))
+  '((t (:inherit warning)))
   "Face for diagnostic warning signs."
   :group 'scrollview)
 
 (defface scrollview-diagnostic-info-face
-  '((t (:inherit flymake-note)))
+  '((t (:inherit success)))
   "Face for diagnostic info/note signs."
   :group 'scrollview)
 
@@ -133,19 +133,19 @@ scrollview is loaded and after themes are enabled."
 (defface scrollview-vc-add-face
   '((t (:inherit diff-added)))
   "Face for added-line VC signs.
-The foreground is synchronized from diff faces, with a green fallback."
+The foreground is synchronized from `diff-added'."
   :group 'scrollview)
 
 (defface scrollview-vc-change-face
   '((t (:inherit diff-changed)))
   "Face for changed-line VC signs.
-The foreground is synchronized from diff faces, with a warning fallback."
+The foreground is synchronized from `diff-changed'."
   :group 'scrollview)
 
 (defface scrollview-vc-delete-face
   '((t (:inherit diff-removed)))
   "Face for deleted-line VC signs.
-The foreground is synchronized from diff faces, with an error fallback."
+The foreground is synchronized from `diff-removed'."
   :group 'scrollview)
 
 (define-fringe-bitmap 'scrollview-search-bitmap
@@ -251,72 +251,15 @@ The foreground is synchronized from diff faces, with an error fallback."
     (when (scrollview--usable-color-p value)
       value)))
 
-(defun scrollview--face-underline-color (face)
-  "Return FACE underline color, if any."
-  (when (facep face)
-    (let ((underline (face-attribute face :underline nil t)))
-      (cond
-       ((and (consp underline)
-             (plist-get underline :color))
-        (plist-get underline :color))
-       ((and (stringp underline)
-             (not (string-empty-p underline)))
-        underline)))))
-
-(defun scrollview--diagnostic-source-color (faces)
-  "Return the best fringe color from diagnostic source FACES."
-  (cl-loop for face in faces
-           thereis (or (scrollview--face-color face :foreground)
-                       (scrollview--face-underline-color face)
-                       (scrollview--face-color face :background))))
-
-(defun scrollview--foreground-source-color (faces)
-  "Return the best non-background source color from FACES."
-  (cl-loop for face in faces
-           thereis (or (scrollview--face-color face :foreground)
-                       (scrollview--face-underline-color face))))
-
-(defun scrollview--sync-diagnostic-faces (&rest _)
-  "Synchronize diagnostic sign faces with diagnostic source faces."
+(defun scrollview--sync-source-faces (entries state-symbol)
+  "Synchronize sign faces from ENTRIES, caching state in STATE-SYMBOL."
   (let ((state
-         (cl-loop for (key target inherit source-faces)
-                  in '((:error scrollview-diagnostic-error-face
-                        flymake-error (flymake-error flycheck-error error))
-                       (:warning scrollview-diagnostic-warning-face
-                        flymake-warning (flymake-warning flycheck-warning warning))
-                       (:info scrollview-diagnostic-info-face
-                        flymake-note (flymake-note flycheck-info success warning)))
+         (cl-loop for (key target inherit source-face) in entries
                   collect (list key target inherit
-                                (scrollview--diagnostic-source-color source-faces)))))
-    (unless (equal state scrollview--diagnostic-face-state)
-      (setq scrollview--diagnostic-face-state state)
-      (pcase-dolist (`(,_ ,target ,inherit ,color) state)
-        (set-face-attribute target nil
-                            :inherit inherit
-                            :foreground (or color 'unspecified)
-                            :background 'unspecified
-                            :inverse-video nil))
-      (clrhash scrollview--sign-render-face-cache))))
-
-(defun scrollview--sync-vc-faces (&rest _)
-  "Synchronize VC sign faces with diff source faces."
-  (let ((state
-         (cl-loop for (key target inherit source-faces fallback)
-                  in '((:add scrollview-vc-add-face
-                        diff-added (diff-added diff-refine-added success)
-                        "green3")
-                       (:change scrollview-vc-change-face
-                        diff-changed (diff-changed diff-refine-changed warning)
-                        "goldenrod")
-                       (:delete scrollview-vc-delete-face
-                        diff-removed (diff-removed diff-refine-removed error)
-                        "red3"))
-                  collect (list key target inherit
-                                (or (scrollview--foreground-source-color
-                                     source-faces)
-                                    fallback)))))
-    (unless (equal state scrollview--vc-face-state)
-      (setq scrollview--vc-face-state state)
+                                (scrollview--face-color
+                                 source-face :foreground)))))
+    (unless (equal state (symbol-value state-symbol))
+      (set state-symbol state)
       (pcase-dolist (`(,_ ,target ,inherit ,color) state)
         (set-face-attribute target nil
                             :inherit inherit
@@ -325,27 +268,27 @@ The foreground is synchronized from diff faces, with an error fallback."
                             :inverse-video nil))
       (clrhash scrollview--sign-render-face-cache))))
 
+(defun scrollview--sync-diagnostic-faces (&rest _)
+  "Synchronize diagnostic sign faces with diagnostic source faces."
+  (scrollview--sync-source-faces
+   '((:error scrollview-diagnostic-error-face error error)
+     (:warning scrollview-diagnostic-warning-face warning warning)
+     (:info scrollview-diagnostic-info-face success success))
+   'scrollview--diagnostic-face-state))
+
+(defun scrollview--sync-vc-faces (&rest _)
+  "Synchronize VC sign faces with diff source faces."
+  (scrollview--sync-source-faces
+   '((:add scrollview-vc-add-face diff-added diff-added)
+     (:change scrollview-vc-change-face diff-changed diff-changed)
+     (:delete scrollview-vc-delete-face diff-removed diff-removed))
+   'scrollview--vc-face-state))
+
 (defun scrollview--sync-faces (&rest _)
   "Synchronize scrollview faces with theme and source faces."
   (scrollview--sync-thumb-face)
   (scrollview--sync-diagnostic-faces)
   (scrollview--sync-vc-faces))
-
-(defun scrollview--sign-foreground (face)
-  "Return the best foreground color for rendering sign FACE.
-Highlight-style faces often carry their visible color in the background, so
-explicit sign colors are preferred before inherited highlight backgrounds."
-  (or (scrollview--face-color face :foreground)
-      (let ((foreground (face-foreground 'default nil t)))
-        (when (scrollview--usable-color-p foreground)
-          foreground))
-      "black"))
-
-(defun scrollview--thumb-background ()
-  "Return the current scrollbar thumb background color."
-  (or (scrollview--face-color 'scrollview-thumb-face :background)
-      (scrollview--selection-color)
-      'unspecified))
 
 (defun scrollview--sign-render-face (face highlighted)
   "Return a render face for sign FACE.
@@ -353,10 +296,11 @@ When HIGHLIGHTED is non-nil, use the scrollbar thumb background.  Otherwise,
 render without painting a background."
   (if (not (symbolp face))
       face
-    (let* ((foreground (scrollview--sign-foreground face))
-           (background (if highlighted
-                           (scrollview--thumb-background)
-                         'unspecified))
+    (let* ((foreground (scrollview--face-color face :foreground))
+           (background (or (and highlighted
+                                (or (scrollview--face-color 'scrollview-thumb-face :background)
+                                    (scrollview--selection-color)))
+                           'unspecified))
            (key (list face highlighted foreground background))
            (render-face (gethash key scrollview--sign-render-face-cache)))
       (unless render-face

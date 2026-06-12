@@ -137,26 +137,6 @@ When STRING is non-nil, include it as the clicked string object."
   (should-not (scrollview--usable-color-p "unspecified-bg"))
   (should (scrollview--usable-color-p "DeepSkyBlue3")))
 
-(ert-deftest scrollview-sign-foreground-ignores-unspecified-default ()
-  (let ((face 'scrollview-test-empty-face))
-    (unwind-protect
-        (progn
-          (unless (facep face)
-            (make-face face))
-          (set-face-attribute face nil
-                              :inherit nil
-                              :foreground 'unspecified
-                              :background 'unspecified)
-          (cl-letf (((symbol-function 'face-foreground)
-                     (lambda (&rest _)
-                       "unspecified-fg")))
-            (should (equal (scrollview--sign-foreground face) "black"))))
-      (when (facep face)
-        (set-face-attribute face nil
-                            :inherit nil
-                            :foreground 'unspecified
-                            :background 'unspecified)))))
-
 (ert-deftest scrollview-thumb-size ()
   (should (= (scrollview--compute-thumb-size 10 100) 1))
   (should (= (scrollview--compute-thumb-size 10 20) 5))
@@ -464,32 +444,6 @@ When STRING is non-nil, include it as the clicked string object."
     (should (eq (alist-get 'change variants) 'scrollview-sign-bar-bitmap))
     (should (eq (alist-get 'delete variants) 'scrollview-sign-delete-bitmap))))
 
-(ert-deftest scrollview-vc-add-face-has-green-fallback ()
-  (scrollview-test--reset-state)
-  (let* ((faces '(diff-added diff-refine-added success scrollview-vc-add-face))
-         (states (mapcar (lambda (face)
-                           (cons face (scrollview-test--face-state face)))
-                         faces)))
-    (unwind-protect
-        (progn
-          (dolist (face '(diff-added diff-refine-added success))
-            (set-face-attribute face nil
-                                :foreground 'unspecified
-                                :underline 'unspecified
-                                :background 'unspecified))
-          (setq scrollview--vc-face-state nil)
-          (scrollview--sync-vc-faces)
-          (should (equal (face-attribute 'scrollview-vc-add-face
-                                         :foreground nil t)
-                         "green3"))
-          (should (equal (scrollview--sign-foreground
-                          'scrollview-vc-add-face)
-                         "green3")))
-      (dolist (state states)
-        (scrollview-test--restore-face-state (car state) (cdr state)))
-      (setq scrollview--vc-face-state nil)
-      (scrollview--sync-vc-faces))))
-
 (ert-deftest scrollview-vc-add-face-prefers-diff-added-color ()
   (scrollview-test--reset-state)
   (let* ((faces '(diff-added scrollview-vc-add-face))
@@ -506,9 +460,6 @@ When STRING is non-nil, include it as the clicked string object."
           (scrollview--sync-vc-faces)
           (should (equal (face-attribute 'scrollview-vc-add-face
                                          :foreground nil t)
-                         "SeaGreen3"))
-          (should (equal (scrollview--sign-foreground
-                          'scrollview-vc-add-face)
                          "SeaGreen3")))
       (dolist (state states)
         (scrollview-test--restore-face-state (car state) (cdr state)))
@@ -517,29 +468,21 @@ When STRING is non-nil, include it as the clicked string object."
 
 (ert-deftest scrollview-vc-add-face-ignores-diff-added-background ()
   (scrollview-test--reset-state)
-  (let* ((faces '(diff-added diff-refine-added success scrollview-vc-add-face))
+  (let* ((faces '(diff-added scrollview-vc-add-face))
          (states (mapcar (lambda (face)
                            (cons face (scrollview-test--face-state face)))
                          faces)))
     (unwind-protect
         (progn
-          (dolist (face '(diff-added diff-refine-added))
-            (set-face-attribute face nil
-                                :foreground 'unspecified
-                                :underline 'unspecified
-                                :background "PaleGreen"))
-          (set-face-attribute 'success nil
-                              :foreground "green4"
+          (set-face-attribute 'diff-added nil
+                              :foreground 'unspecified
                               :underline 'unspecified
-                              :background 'unspecified)
+                              :background "PaleGreen")
           (setq scrollview--vc-face-state nil)
           (scrollview--sync-vc-faces)
           (should (equal (face-attribute 'scrollview-vc-add-face
                                          :foreground nil t)
-                         "green4"))
-          (should (equal (scrollview--sign-foreground
-                          'scrollview-vc-add-face)
-                         "green4")))
+                         'unspecified)))
       (dolist (state states)
         (scrollview-test--restore-face-state (car state) (cdr state)))
       (setq scrollview--vc-face-state nil)
@@ -588,24 +531,23 @@ When STRING is non-nil, include it as the clicked string object."
                      'scrollview-diagnostic-error-face))
          (should (eq (face-attribute (scrollview--sign-spec-face spec)
                                      :inherit nil t)
-                     'flymake-error)))
+                     'error)))
         ('warning
          (should (eq (scrollview--sign-spec-face spec)
                      'scrollview-diagnostic-warning-face))
          (should (eq (face-attribute (scrollview--sign-spec-face spec)
                                      :inherit nil t)
-                     'flymake-warning)))
+                     'warning)))
         ('info
          (should (eq (scrollview--sign-spec-face spec)
                      'scrollview-diagnostic-info-face))
          (should (eq (face-attribute (scrollview--sign-spec-face spec)
                                      :inherit nil t)
-                     'flymake-note)))))))
+                     'success)))))))
 
 (ert-deftest scrollview-diagnostic-faces-copy-source-colors ()
   (scrollview-test--reset-state)
-  (require 'flymake)
-  (let* ((faces '(flymake-error flymake-warning flymake-note
+  (let* ((faces '(error warning success
                   scrollview-diagnostic-error-face
                   scrollview-diagnostic-warning-face
                   scrollview-diagnostic-info-face))
@@ -614,18 +556,17 @@ When STRING is non-nil, include it as the clicked string object."
                          faces)))
     (unwind-protect
         (progn
-          (set-face-attribute 'flymake-error nil
-                              :foreground 'unspecified
-                              :underline '(:style wave :color "firebrick")
-                              :background 'unspecified)
-          (set-face-attribute 'flymake-warning nil
+          (set-face-attribute 'error nil
+                              :foreground "firebrick"
+                              :underline 'unspecified
+                              :background "pink")
+          (set-face-attribute 'warning nil
                               :foreground "goldenrod"
-                              :underline 'unspecified
                               :background 'unspecified)
-          (set-face-attribute 'flymake-note nil
-                              :foreground 'unspecified
+          (set-face-attribute 'success nil
+                              :foreground "seagreen"
                               :underline 'unspecified
-                              :background "seagreen")
+                              :background "pale green")
           (setq scrollview--diagnostic-face-state nil)
           (scrollview--sync-diagnostic-faces)
           (should (equal (face-attribute
@@ -647,8 +588,7 @@ When STRING is non-nil, include it as the clicked string object."
 
 (ert-deftest scrollview-refresh-resyncs-diagnostic-face-colors ()
   (scrollview-test--reset-state)
-  (require 'flymake)
-  (let* ((faces '(flymake-error scrollview-diagnostic-error-face))
+  (let* ((faces '(error scrollview-diagnostic-error-face))
          (states (mapcar (lambda (face)
                            (cons face (scrollview-test--face-state face)))
                          faces)))
@@ -658,7 +598,7 @@ When STRING is non-nil, include it as the clicked string object."
           (let ((scrollview-signs-on-startup nil)
                 (scrollview-line-limit -1)
                 (scrollview-byte-limit -1))
-            (set-face-attribute 'flymake-error nil
+            (set-face-attribute 'error nil
                                 :foreground 'unspecified
                                 :underline 'unspecified
                                 :background 'unspecified)
@@ -668,9 +608,9 @@ When STRING is non-nil, include it as the clicked string object."
                          'scrollview-diagnostic-error-face
                          :foreground nil t)
                         'unspecified))
-            (set-face-attribute 'flymake-error nil
-                                :foreground 'unspecified
-                                :underline '(:style wave :color "firebrick")
+            (set-face-attribute 'error nil
+                                :foreground "firebrick"
+                                :underline 'unspecified
                                 :background 'unspecified)
             (cl-letf (((symbol-function 'scrollview--fringe-available-p)
                        (lambda (_window) t)))
