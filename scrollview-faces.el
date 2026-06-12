@@ -149,10 +149,10 @@ The foreground is synchronized from diff faces, with an error fallback."
   :group 'scrollview)
 
 (define-fringe-bitmap 'scrollview-search-bitmap
-  [0 0 126 126 126 126 0 0] nil nil 'center)
+  [0 0 0 126 126 0 0 0] nil nil 'center)
 
 (define-fringe-bitmap 'scrollview-symbol-bitmap
-  [0 24 24 126 126 24 24 0] nil nil 'center)
+  [0 24 24 126 24 24 0 0] nil nil 'center)
 
 (define-fringe-bitmap 'scrollview-diagnostic-bitmap
   [0 60 126 126 126 126 60 0] nil nil 'center)
@@ -171,50 +171,34 @@ The foreground is synchronized from diff faces, with an error fallback."
   scrollview--vc-bar-bitmap-vector nil nil 'center)
 
 (define-fringe-bitmap 'scrollview-sign-delete-bitmap
-  [0 0 0 0 0 126 126 126] nil nil 'center)
+  [0 0 0 126 126 0 0 0] nil nil 'center)
 
 (define-fringe-bitmap 'scrollview-spell-bitmap
-  [0 0 0 108 54 0 0 0] nil nil 'center)
+  [0 0 0 96 48 24 12 0] nil nil 'center)
 
-(defconst scrollview--letter-bitmaps
-  '((?A . [0 24 60 102 126 102 102 0])
-    (?B . [0 124 102 124 102 102 124 0])
-    (?C . [0 60 102 96 96 102 60 0])
-    (?D . [0 120 108 102 102 108 120 0])
-    (?E . [0 126 96 124 96 96 126 0])
-    (?F . [0 126 96 124 96 96 96 0])
-    (?G . [0 60 102 96 110 102 60 0])
-    (?H . [0 102 102 126 102 102 102 0])
-    (?I . [0 60 24 24 24 24 60 0])
-    (?J . [0 30 12 12 12 108 56 0])
-    (?K . [0 102 108 120 120 108 102 0])
-    (?L . [0 96 96 96 96 96 126 0])
-    (?M . [0 99 119 127 107 99 99 0])
-    (?N . [0 102 118 126 126 110 102 0])
-    (?O . [0 60 102 102 102 102 60 0])
-    (?P . [0 124 102 102 124 96 96 0])
-    (?Q . [0 60 102 102 102 108 54 0])
-    (?R . [0 124 102 102 124 108 102 0])
-    (?S . [0 60 96 60 6 6 124 0])
-    (?T . [0 126 24 24 24 24 24 0])
-    (?U . [0 102 102 102 102 102 60 0])
-    (?V . [0 102 102 102 102 60 24 0])
-    (?W . [0 99 99 107 127 119 99 0])
-    (?X . [0 102 102 60 24 60 102 0])
-    (?Y . [0 102 102 60 24 24 24 0])
-    (?Z . [0 126 6 12 24 48 126 0]))
-  "Alist mapping uppercase ASCII letters to 8x8 fringe bitmaps.")
+(define-fringe-bitmap 'scrollview-keyword-todo-bitmap
+  [0 126 66 66 66 66 126 0] nil nil 'center)
+
+(define-fringe-bitmap 'scrollview-keyword-fixme-bitmap
+  [0 102 60 24 24 60 102 0] nil nil 'center)
+
+(define-fringe-bitmap 'scrollview-keyword-hack-bitmap
+  [0 12 24 126 24 48 96 0] nil nil 'center)
+
+(define-fringe-bitmap 'scrollview-keyword-note-bitmap
+  [0 124 68 68 92 64 124 0] nil nil 'center)
+
+(define-fringe-bitmap 'scrollview-keyword-bitmap
+  [0 24 60 126 60 24 0 0] nil nil 'center)
 
 (defun scrollview--keyword-bitmap (variant)
-  "Return a fringe bitmap symbol for keyword VARIANT's first letter."
-  (let* ((name (upcase (symbol-name variant)))
-         (letter (and (> (length name) 0) (aref name 0)))
-         (bitmap (and letter (alist-get letter scrollview--letter-bitmaps))))
-    (if bitmap
-        (let ((symbol (intern (format "scrollview-keyword-%c-bitmap" letter))))
-          (define-fringe-bitmap symbol bitmap nil nil 'center)
-          symbol)
-      'scrollview-sign-dot-bitmap)))
+  "Return a semantic fringe bitmap symbol for keyword VARIANT."
+  (pcase variant
+    ('todo 'scrollview-keyword-todo-bitmap)
+    ('fixme 'scrollview-keyword-fixme-bitmap)
+    ('hack 'scrollview-keyword-hack-bitmap)
+    ('note 'scrollview-keyword-note-bitmap)
+    (_ 'scrollview-keyword-bitmap)))
 
 (defvar scrollview--sign-render-face-cache (make-hash-table :test #'equal)
   "Hash table mapping source sign faces to cached render face data.")
