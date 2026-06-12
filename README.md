@@ -1,18 +1,13 @@
 # scrollview.el
 
-`scrollview.el` is an Emacs fringe scrollbar inspired by
-`nvim-scrollview`.  It renders with window-local overlays and fringe display
-specs, following the same general mechanism used by `yascroll`; it does not use
-child frames.
+Fringe scrollbar and document signs for Emacs.
 
-## Requirements
+`scrollview.el` renders into the left or right fringe with ordinary overlays and
+fringe display specs.  It does not use child frames.
 
-- Emacs 29.1 or newer
-- A window with a usable left or right fringe
+**Requirements**: Emacs 29.1 or newer
 
 ## Installation
-
-Place the `scrollview.el` directory on your `load-path`, then enable it:
 
 ```elisp
 (add-to-list 'load-path "/path/to/scrollview.el")
@@ -20,185 +15,138 @@ Place the `scrollview.el` directory on your `load-path`, then enable it:
 (global-scrollview-mode 1)
 ```
 
-For a single buffer:
+For one buffer only:
 
 ```elisp
 (scrollview-mode 1)
 ```
 
-The package is split into small internal modules:
-
-- `scrollview-custom.el`: user options
-- `scrollview-faces.el`: faces, fringe bitmaps, and sign render faces
-- `scrollview-core.el`: sign registry, rendering, scheduling, navigation, modes
-- `scrollview-signs.el`: built-in sign collectors and their update hooks
-- `scrollview.el`: public entry point
-
 ## Configuration
 
 ```elisp
-(setq scrollview-side 'right)              ; or 'left
-(setq scrollview-visibility 'always)       ; overflow, always, info
-(setq scrollview-current-window-only nil)
-(setq scrollview-signs-on-startup '(search diagnostics)) ; or 'all
+(setq scrollview-side 'right
+      scrollview-visibility 'always
+      scrollview-signs-on-startup 'all)
 ```
 
-Large buffers enter restricted mode and skip signs:
+Common alternatives:
 
 ```elisp
-(setq scrollview-line-limit 20000)
-(setq scrollview-byte-limit 1000000)
+;; Show only selected sign groups on startup.
+(setq scrollview-signs-on-startup '(search diagnostics vc))
+
+;; Start without signs; enable groups later with commands.
+(setq scrollview-signs-on-startup nil)
+
+;; Hide signs in very large buffers.
+(setq scrollview-line-limit 20000
+      scrollview-byte-limit 1000000)
 ```
 
-The scrollbar thumb uses the current `region` face background, matching the
-theme's selection color.
+### Options
 
-Refreshes are debounced for configuration and buffer changes.  Scroll refreshes
-run synchronously to avoid stale fringe rows during redisplay, but reuse cached
-sign data until the buffer, search state, diagnostics, spelling state, or sign
-registration changes.
+| Option | Default | Meaning |
+| --- | --- | --- |
+| `scrollview-side` | `right` | Fringe side.  Use `right` or `left`. |
+| `scrollview-visibility` | `always` | `always`, `overflow`, or `info`.  `info` shows the fringe when the buffer overflows or signs exist. |
+| `scrollview-current-window-only` | `nil` | Show only in the selected window. |
+| `scrollview-excluded-modes` | `(image-mode doc-view-mode pdf-view-mode)` | Major modes, including derived modes, where scrollview is disabled. |
+| `scrollview-line-limit` | `20000` | Above this line count, restricted mode disables signs.  Set to `-1` to disable the limit. |
+| `scrollview-byte-limit` | `1000000` | Above this buffer size, restricted mode disables signs.  Set to `-1` to disable the limit. |
+| `scrollview-signs-on-startup` | `all` | Built-in sign groups enabled on first use.  Use `all`, `nil`, or a list of group symbols. |
+| `scrollview-refresh-delay` | `0.03` | Idle delay, in seconds, for scheduled refreshes. |
+| `scrollview-scrollbar-priority` | `0` | Scrollbar priority when a sign lands on the same fringe row. |
+| `scrollview-overlay-priority` | `1000` | Overlay priority used for rendered fringe indicators. |
+| `scrollview-wrap-navigation` | `t` | `scrollview-next` and `scrollview-prev` wrap around buffer ends. |
 
-## Commands
-
-- `scrollview-mode`
-- `global-scrollview-mode`
-- `scrollview-refresh`
-- `scrollview-next`
-- `scrollview-prev`
-- `scrollview-first`
-- `scrollview-last`
-- `scrollview-click`
-- `scrollview-legend`
-- `scrollview-enable-sign-group`
-- `scrollview-disable-sign-group`
-- `scrollview-toggle-sign-group`
-
-## Mouse
-
-Click the configured fringe side to jump to the corresponding document
-position.  Clicking a visible sign jumps to that sign's line.
+Restricted mode keeps the scrollbar and skips sign collection.
 
 ## Built-In Signs
 
-- `search`: matches from active isearch, or retained isearch lazy highlights
-- `diagnostics`: Flymake diagnostics and loaded Flycheck errors, using dot
-  signs colored by the theme's diagnostic faces
-- `conflicts`: optional, disabled by default; conflict markers found through
-  `smerge-mode`
-- `keywords`: optional, disabled by default; keyword matches found through
-  `hl-todo`
-- `spell`: optional, disabled by default; misspellings highlighted by
-  `flyspell`
-- `vc`: optional, disabled by default; add/change/delete hunks reported by
-  `diff-hl`
+| Group | Source | Variants |
+| --- | --- | --- |
+| `search` | Active isearch, or retained lazy-highlight overlays after isearch exits | `match` |
+| `diagnostics` | Flymake diagnostics and Flycheck errors when Flycheck is loaded | `error`, `warning`, `info` |
+| `conflicts` | `smerge-mode` conflict markers | `top`, `middle`, `bottom` |
+| `keywords` | `hl-todo` keywords from `hl-todo-keyword-faces` | One variant per configured keyword |
+| `spell` | Flyspell overlays | `misspelled` |
+| `vc` | `diff-hl` hunks | `add`, `change`, `delete` |
 
-Built-in sign shapes:
+All built-in groups are enabled by default.  Groups backed by optional packages
+produce signs only when their package is available and has data for the current
+buffer.
 
-- `search`: horizontal block
-- `diagnostics`: round dot
-- `conflicts`: diamond-like dot
-- `keywords`: first-letter bitmap, such as `H` for HACK
-- `spell`: `~`
-- `vc` add/change: vertical bar
-- `vc` delete: bottom block
+Enable, disable, or toggle groups at runtime:
 
-When signs and the scrollbar map to the same fringe row, the item with higher
-priority wins.  The v1 renderer uses one fringe slot per row.
-Signs render without a background when they do not overlap the scrollbar
-thumb.  When a sign replaces the scrollbar thumb on the same row, it uses the
-thumb background so the scrollbar remains visually continuous.
+```elisp
+(scrollview-enable-sign-group 'vc)
+(scrollview-disable-sign-group 'spell)
+(scrollview-toggle-sign-group 'all)
+```
 
-## Sign Extension Example
+## Commands
+
+| Command | Action |
+| --- | --- |
+| `scrollview-mode` | Toggle scrollview in the current buffer. |
+| `global-scrollview-mode` | Toggle scrollview for eligible buffers. |
+| `scrollview-refresh` | Rebuild rendered overlays. |
+| `scrollview-next` | Jump to the next visible sign. |
+| `scrollview-prev` | Jump to the previous visible sign. |
+| `scrollview-first` | Jump to the first visible sign. |
+| `scrollview-last` | Jump to the last visible sign. |
+| `scrollview-click` | Mouse command for fringe clicks. |
+| `scrollview-legend` | Show registered sign specs, priorities, faces, and states. |
+| `scrollview-enable-sign-group` | Enable a sign group. |
+| `scrollview-disable-sign-group` | Disable a sign group. |
+| `scrollview-toggle-sign-group` | Toggle a sign group. |
+
+`scrollview-next`, `scrollview-prev`, `scrollview-first`, and
+`scrollview-last` accept an optional group or group list from Lisp.
+
+## Mouse
+
+Click the configured fringe to jump to the corresponding document position.
+Click a visible sign to jump to that sign's line.
+
+Mouse drag is not implemented.
+
+## Rendering Rules
+
+- One fringe slot is used per window row.
+- Higher priority wins when multiple items map to the same row.
+- At equal priority, the earlier registered sign spec wins.
+- A sign that replaces the scrollbar thumb uses the thumb background.
+- A sign outside the thumb is rendered without a background.
+- The scrollbar thumb follows the current `region` face color.
+
+## Custom Signs
+
+Register a group, then register one or more sign specs.  A collector is called
+with a window and returns line numbers or markers in that window's buffer.
 
 ```elisp
 (scrollview-register-sign-group 'todo t)
 
-(scrollview-register-sign-spec
- :group 'todo
- :variant 'todo
- :priority 55
- :bitmap 'scrollview-search-bitmap
- :face 'font-lock-warning-face
- :collector
- (lambda (_window)
-   (let (lines)
-     (save-excursion
-       (goto-char (point-min))
-       (while (re-search-forward "\\<TODO\\>" nil t)
-         (push (line-number-at-pos (match-beginning 0) t) lines)))
-     (nreverse (delete-dups lines)))))
+(defvar my-scrollview-todo-sign
+  (scrollview-register-sign-spec
+   :group 'todo
+   :variant 'todo
+   :priority 55
+   :bitmap 'scrollview-search-bitmap
+   :face 'font-lock-warning-face
+   :collector
+   (lambda (_window)
+     (let (lines)
+       (save-excursion
+         (goto-char (point-min))
+         (while (re-search-forward "\\<TODO\\>" nil t)
+           (push (line-number-at-pos (match-beginning 0) t) lines)))
+       (nreverse lines)))))
 ```
 
-## Limitations
+Remove a spec with:
 
-- No mouse drag support in v1
-- No childframe or text-area fallback
-- No multi-column sign overflow
-- Positioning uses simple line-based mapping; fold/wrap-accurate proper mode is
-  deferred
-- VC signs follow `diff-hl` support.  Backends and refresh behavior are the
-  same ones `diff-hl` can report for the current buffer.
-
-## Tests
-
-```sh
-/Applications/Emacs.2026-04-18.8f53537.emacs-30.macOS-26.arm64/Emacs.app/Contents/MacOS/Emacs \
-  -Q --batch -L . -f batch-byte-compile \
-  scrollview-custom.el scrollview-faces.el scrollview-core.el \
-  scrollview-signs.el scrollview.el
-
-/Applications/Emacs.2026-04-18.8f53537.emacs-30.macOS-26.arm64/Emacs.app/Contents/MacOS/Emacs \
-  -Q --batch -L . -l test/scrollview-test.el -f ert-run-tests-batch-and-exit
+```elisp
+(scrollview-deregister-sign-spec my-scrollview-todo-sign)
 ```
-
-## Performance Metrics
-
-Use the batch benchmark harness to evaluate `scrollview` under a repeatable
-stress workload instead of a micro-benchmark:
-
-```sh
-/Applications/Emacs.2026-04-18.8f53537.emacs-30.macOS-26.arm64/Emacs.app/Contents/MacOS/Emacs \
-  -Q --batch -L . -l test/scrollview-benchmark.el -f scrollview-benchmark-run
-```
-
-Optional environment variables:
-
-- `SCROLLVIEW_BENCH_ITERATIONS`: iterations per scenario, default `1`
-- `SCROLLVIEW_BENCH_LINES`: line count for standard scenarios, default `20000`
-- `SCROLLVIEW_BENCH_LARGE_LINES`: line count for restricted mode, default `100000`
-
-The benchmark prints JSON with these scenarios:
-
-- `cold_refresh_plain`: first full refresh cost without signs
-- `warm_refresh_plain`: repeated full refresh cost without signs
-- `scroll_refresh_plain`: synchronous scroll refresh cost without signs
-- `full_refresh_with_signs`: full refresh cost with synthetic signs enabled
-- `scroll_refresh_with_signs`: scroll refresh cost while reusing sign cache
-- `full_refresh_stress_signs`: full refresh cost with dense signs and multiple
-  regex-scanning collectors
-- `restricted_refresh`: refresh cost once line limits force restricted mode
-
-Each metric record includes:
-
-- `total_s`: total wall-clock seconds across all iterations
-- `mean_s`: average wall-clock seconds per iteration
-- `mean_ms`: average wall-clock time per iteration; primary regression signal
-- `gc_mean_ms`: average GC time per iteration; useful when allocations grow
-- `gc_count`: total collections during the scenario
-- `overlay_count`: fringe overlay count after the benchmarked operation
-- `line_count`: buffer size used by the scenario
-- `sign_count`: synthetic sign count used by the scenario
-- `restricted`: whether the scenario ran in restricted mode
-
-Recommended regression gates:
-
-- Keep `scroll_refresh_plain` and `scroll_refresh_with_signs` stable first.
-  Those are the user-visible scrolling paths.
-- Use `full_refresh_stress_signs` as the upper-bound regression check.  It is
-  intentionally hostile and should land in the seconds range with the default
-  stress profile on typical developer machines.
-- Watch `gc_mean_ms` together with `mean_ms`.  If both rise, the change likely
-  adds allocation churn.
-- Track `overlay_count` to catch accidental over-rendering.
-- Compare JSON outputs between commits instead of relying on one absolute
-  number from a single run.
