@@ -44,7 +44,6 @@
   (setq scrollview--last-search-regexp nil)
   (setq scrollview--diagnostic-state-generation 0)
   (setq scrollview--spell-state-generation 0)
-  (setq scrollview--ispell-misspelling-markers nil)
   (setq scrollview--vc-state-generation 0))
 
 (defun scrollview-test--insert-lines (count &optional prefix)
@@ -999,23 +998,18 @@ When STRING is non-nil, include it as the clicked string object."
         (should (equal (scrollview--collect-keyword-lines 'todo) '(1)))
         (should (equal (scrollview--collect-keyword-lines 'fixme) '(3)))))))
 
-(ert-deftest scrollview-spell-collector-uses-ispell-results ()
+(ert-deftest scrollview-spell-collector-uses-flyspell-overlays ()
   (scrollview-test--reset-state)
   (with-temp-buffer
     (insert "good\nbadword\nagain\n")
     (goto-char (point-min))
-    (let ((start (line-beginning-position 2))
-          (end (line-end-position 2)))
-      (cl-letf (((symbol-function 'scrollview--schedule-buffer-refresh)
-                 #'ignore))
-        (scrollview--around-ispell-command-loop
-         (lambda (&rest _) nil)
-         nil nil "badword" start end)
-        (should (equal (scrollview--collect-spell-lines nil) '(2)))
-        (scrollview--around-ispell-command-loop
-         (lambda (&rest _) "better")
-         nil nil "badword" start end)
-        (should-not (scrollview--collect-spell-lines nil))))))
+    (let ((overlay (make-overlay (line-beginning-position 2)
+                                 (line-end-position 2))))
+      (overlay-put overlay 'flyspell-overlay t)
+      (should (equal (scrollview--collect-spell-lines nil) '(2)))
+      (delete-overlay overlay)
+      (cl-incf scrollview--spell-state-generation)
+      (should-not (scrollview--collect-spell-lines nil)))))
 
 (ert-deftest scrollview-vc-collector-uses-diff-hl-changes ()
   (scrollview-test--reset-state)

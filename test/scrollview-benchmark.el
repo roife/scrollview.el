@@ -78,7 +78,6 @@
   (setq scrollview--last-search-regexp nil)
   (setq scrollview--diagnostic-state-generation 0)
   (setq scrollview--spell-state-generation 0)
-  (setq scrollview--ispell-misspelling-markers nil)
   (setq scrollview--vc-state-generation 0))
 
 (defun scrollview-benchmark--insert-lines (count &optional prefix)

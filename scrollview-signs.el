@@ -23,15 +23,12 @@
 (declare-function hl-todo--search "hl-todo" (&optional regexp bound backward))
 (declare-function diff-hl-changes "diff-hl" ())
 (declare-function diff-hl-changes-from-buffer "diff-hl" (buf))
+(declare-function flyspell-overlay-p "flyspell" (overlay))
 
 (defvar hl-todo-keyword-faces)
 (defvar diff-hl-reference-revision)
 (defvar diff-hl-show-staged-changes)
 (defvar diff-hl-update-async)
-(defvar ispell-quit)
-
-(defvar-local scrollview--ispell-misspelling-markers nil
-  "Markers for misspellings reported by Ispell in the current buffer.")
 
 (defvar-local scrollview--vc-state-generation 0
   "Buffer-local generation incremented after diff-hl updates.")
@@ -300,74 +297,35 @@ literally with `search-forward'."
   "Collect keyword lines for VARIANT."
   (cdr (assq variant (scrollview--hl-todo-lines))))
 
-(defun scrollview--ispell-note-update ()
-  "Invalidate spell signs after an Ispell result change."
+(defun scrollview--flyspell-note-update (&rest _)
+  "Invalidate spell signs after Flyspell overlays change."
   (cl-incf scrollview--spell-state-generation)
   (when (bound-and-true-p scrollview-mode)
     (scrollview--invalidate-buffer-sign-cache)
     (scrollview--schedule-buffer-refresh)))
 
-(defun scrollview--ispell-clear-line (position)
-  "Forget recorded Ispell misspellings on POSITION's line."
-  (let ((line (line-number-at-pos position t))
-        changed)
-    (dolist (marker scrollview--ispell-misspelling-markers)
-      (unless (and (eq (marker-buffer marker) (current-buffer))
-                   (marker-position marker)
-                   (= (line-number-at-pos marker t) line))
-        (push marker changed)))
-    (unless (= (length changed)
-               (length scrollview--ispell-misspelling-markers))
-      (mapc (lambda (marker)
-              (unless (memq marker changed)
-                (set-marker marker nil)))
-            scrollview--ispell-misspelling-markers)
-      (setq scrollview--ispell-misspelling-markers (nreverse changed))
-      (scrollview--ispell-note-update))))
-
-(defun scrollview--ispell-clear-region (beg end)
-  "Forget recorded Ispell misspellings between BEG and END."
-  (let (kept changed)
-    (dolist (marker scrollview--ispell-misspelling-markers)
-      (if (and (eq (marker-buffer marker) (current-buffer))
-               (let ((position (marker-position marker)))
-                 (and position
-                      (<= beg position)
-                      (< position end))))
-          (progn
-            (setq changed t)
-            (set-marker marker nil))
-        (push marker kept)))
-    (when changed
-      (setq scrollview--ispell-misspelling-markers (nreverse kept))
-      (scrollview--ispell-note-update))))
-
-(defun scrollview--ispell-record-misspelling (position)
-  "Record an Ispell misspelling at POSITION."
-  (scrollview--ispell-clear-line position)
-  (let ((marker (copy-marker position t)))
-    (push marker scrollview--ispell-misspelling-markers)
-    (scrollview--ispell-note-update)))
+(defun scrollview--flyspell-overlay-p (overlay)
+  "Return non-nil when OVERLAY is owned by Flyspell."
+  (or (overlay-get overlay 'flyspell-overlay)
+      (and (fboundp 'flyspell-overlay-p)
+           (flyspell-overlay-p overlay))))
 
 (defun scrollview--spell-lines ()
-  "Return lines that Ispell reported as misspelled."
+  "Return lines containing Flyspell misspelling overlays."
   (scrollview--cached-collector-value
    'spell
    (list :tick (buffer-chars-modified-tick)
          :generation scrollview--spell-state-generation)
    (lambda ()
-     (setq scrollview--ispell-misspelling-markers
-           (seq-filter (lambda (marker)
-                         (and (eq (marker-buffer marker) (current-buffer))
-                              (marker-position marker)))
-                       scrollview--ispell-misspelling-markers))
      (scrollview--dedupe-sorted-lines
-      (mapcar (lambda (marker)
-                (line-number-at-pos marker t))
-              scrollview--ispell-misspelling-markers)))))
+      (delq nil
+            (mapcar (lambda (overlay)
+                      (when (scrollview--flyspell-overlay-p overlay)
+                        (line-number-at-pos (overlay-start overlay) t)))
+                    (overlays-in (point-min) (point-max))))))))
 
 (defun scrollview--collect-spell-lines (_window)
-  "Collect spelling error lines recorded from Ispell."
+  "Collect spelling error lines from Flyspell overlays."
   (scrollview--spell-lines))
 
 (defun scrollview--diff-hl-available-p ()
@@ -586,33 +544,15 @@ literally with `search-forward'."
   (add-hook 'flycheck-after-syntax-check-hook
             #'scrollview--after-diagnostics-update))
 
-(defun scrollview--before-ispell-region (beg end &rest _)
-  "Forget recorded Ispell misspellings before checking BEG to END."
-  (scrollview--ispell-clear-region beg end))
-
-(defun scrollview--around-ispell-command-loop
-    (function miss guess word start end)
-  "Record Ispell misspellings observed by FUNCTION.
-MISS, GUESS, WORD, START, and END are the arguments passed to
-`ispell-command-loop'."
-  (let ((marker (copy-marker start t)))
-    (unwind-protect
-        (let ((result (funcall function miss guess word start end)))
-          (if result
-              (scrollview--ispell-clear-line marker)
-            (scrollview--ispell-record-misspelling marker))
-          result)
-      (set-marker marker nil))))
-
-(with-eval-after-load 'ispell
-  (unless (advice-member-p #'scrollview--before-ispell-region
-                           'ispell-region)
-    (advice-add 'ispell-region :before
-                #'scrollview--before-ispell-region))
-  (unless (advice-member-p #'scrollview--around-ispell-command-loop
-                           'ispell-command-loop)
-    (advice-add 'ispell-command-loop :around
-                #'scrollview--around-ispell-command-loop)))
+(with-eval-after-load 'flyspell
+  (dolist (function '(flyspell-highlight-incorrect-region
+                      flyspell-unhighlight-at
+                      flyspell-delete-all-overlays
+                      flyspell-delete-region-overlays))
+    (when (and (fboundp function)
+               (not (advice-member-p #'scrollview--flyspell-note-update
+                                     function)))
+      (advice-add function :after #'scrollview--flyspell-note-update))))
 
 (defun scrollview--after-diff-hl-update (&rest _)
   "Refresh scrollview signs after diff-hl updates."

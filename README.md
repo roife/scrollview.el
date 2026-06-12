@@ -87,8 +87,8 @@ position.  Clicking a visible sign jumps to that sign's line.
   `smerge-mode`
 - `keywords`: optional, disabled by default; keyword matches found through
   `hl-todo`
-- `spell`: optional, disabled by default; misspellings recorded from `ispell`
-  sessions
+- `spell`: optional, disabled by default; misspellings highlighted by
+  `flyspell`
 - `vc`: optional, disabled by default; add/change/delete hunks reported by
   `diff-hl`
 
