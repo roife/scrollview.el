@@ -349,24 +349,9 @@ literally with `search-forward'."
 
 (defun scrollview--regexp-lines (pattern)
   "Return buffer lines matching regexp PATTERN."
-  (let (lines)
-    (when (and (stringp pattern)
-               (not (string-empty-p pattern)))
-      (save-excursion
-        (save-match-data
-          (goto-char (point-min))
-          (condition-case nil
-              (catch 'done
-                (while (re-search-forward pattern nil t)
-                  (let ((line (line-number-at-pos (match-beginning 0) t)))
-                    (unless (eq line (car lines))
-                      (push line lines)))
-                  (when (= (match-beginning 0) (match-end 0))
-                    (if (eobp)
-                        (throw 'done nil)
-                      (forward-char 1)))))
-            (error nil)))))
-    (nreverse lines)))
+  (when (and (stringp pattern)
+             (not (string-empty-p pattern)))
+    (scrollview--scan-search-lines pattern t)))
 
 (defun scrollview--highlight-symbol-patterns ()
   "Return active highlight-symbol regexps for the current buffer."
@@ -410,7 +395,10 @@ literally with `search-forward'."
 (defun scrollview--overlay-lines (overlays)
   "Return sorted unique current-buffer lines for OVERLAYS."
   (scrollview--dedupe-sorted-lines
-   (delq nil (mapcar #'scrollview--overlay-line overlays))))
+   (cl-loop for overlay in overlays
+            for line = (scrollview--overlay-line overlay)
+            when line
+            collect line)))
 
 (defun scrollview--symbol-overlay-overlays ()
   "Return active symbol-overlay overlays for the current buffer."
@@ -477,17 +465,17 @@ literally with `search-forward'."
                   (require 'bookmark nil t)
                   (boundp 'bookmark-alist))
          (scrollview--dedupe-sorted-lines
-          (delq nil
-                (mapcar
-                 (lambda (bookmark)
-                   (when (scrollview--same-file-p
-                          file
-                          (ignore-errors
-                            (bookmark-get-filename bookmark)))
-                     (scrollview--bookmark-position-line
-                      (ignore-errors
-                        (bookmark-get-position bookmark)))))
-                 bookmark-alist))))))))
+          (cl-loop for bookmark in bookmark-alist
+                   for bookmark-file = (ignore-errors
+                                         (bookmark-get-filename bookmark))
+                   for position = (ignore-errors
+                                    (bookmark-get-position bookmark))
+                   for line = (and (scrollview--same-file-p
+                                    file bookmark-file)
+                                   (scrollview--bookmark-position-line
+                                    position))
+                   when line
+                   collect line)))))))
 
 (defun scrollview--collect-bookmark-lines (_window)
   "Collect bookmark lines for the current buffer."
@@ -670,11 +658,9 @@ literally with `search-forward'."
          :generation scrollview--spell-state-generation)
    (lambda ()
      (scrollview--dedupe-sorted-lines
-      (delq nil
-            (mapcar (lambda (overlay)
-                      (when (scrollview--flyspell-overlay-p overlay)
-                        (line-number-at-pos (overlay-start overlay) t)))
-                    (overlays-in (point-min) (point-max))))))))
+      (cl-loop for overlay in (overlays-in (point-min) (point-max))
+               when (scrollview--flyspell-overlay-p overlay)
+               collect (line-number-at-pos (overlay-start overlay) t))))))
 
 (defun scrollview--collect-spell-lines (_window)
   "Collect spelling error lines from Flyspell overlays."
@@ -744,7 +730,7 @@ literally with `search-forward'."
 
 (defun scrollview--variant-key (variant)
   "Return plist keyword for VARIANT."
-  (intern (format ":%s" variant)))
+  (intern (concat ":" (symbol-name variant))))
 
 (defun scrollview--keyword-sign-specs ()
   "Return built-in keyword sign specs from hl-todo."

@@ -909,8 +909,9 @@ eligible windows."
 
 (defun scrollview--after-window-scroll (window _start)
   "Refresh WINDOW immediately after it scrolls.
-Keeping this synchronous prevents stale scrollview overlays from riding along with
-the text for one redisplay frame before the debounced refresh corrects them."
+Keeping this synchronous prevents stale scrollview overlays from riding along
+with the text for one redisplay frame before the debounced refresh corrects
+them."
   (scrollview--refresh-now window t))
 
 (defun scrollview--after-change (&rest _)
