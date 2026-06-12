@@ -151,6 +151,9 @@ The foreground is synchronized from diff faces, with an error fallback."
 (define-fringe-bitmap 'scrollview-search-bitmap
   [0 0 126 126 126 126 0 0] nil nil 'center)
 
+(define-fringe-bitmap 'scrollview-symbol-bitmap
+  [0 24 24 126 126 24 24 0] nil nil 'center)
+
 (define-fringe-bitmap 'scrollview-diagnostic-bitmap
   [0 60 126 126 126 126 60 0] nil nil 'center)
 

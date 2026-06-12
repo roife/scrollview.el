@@ -785,7 +785,7 @@ literally with `search-forward'."
      :group 'highlight-symbol
      :variant 'match
      :priority 38
-     :bitmap 'scrollview-search-bitmap
+     :bitmap 'scrollview-symbol-bitmap
      :face 'scrollview-highlight-symbol-face
      :collector #'scrollview--collect-highlight-symbol-lines)
 
@@ -795,7 +795,7 @@ literally with `search-forward'."
      :group 'symbol-overlay
      :variant 'match
      :priority 39
-     :bitmap 'scrollview-search-bitmap
+     :bitmap 'scrollview-symbol-bitmap
      :face 'scrollview-symbol-overlay-face
      :collector #'scrollview--collect-symbol-overlay-lines)
 
