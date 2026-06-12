@@ -7,6 +7,8 @@
 (require 'scrollview)
 
 (defvar flycheck-current-errors nil)
+(defvar highlight-symbol nil)
+(defvar highlight-symbol-keyword-alist nil)
 (defvar hl-todo-keyword-faces nil)
 
 (defun scrollview-test--reset-state ()
@@ -42,6 +44,7 @@
   (setq scrollview--refreshing nil)
   (setq scrollview--last-search-pattern nil)
   (setq scrollview--last-search-regexp nil)
+  (setq scrollview--highlight-symbol-state-generation 0)
   (setq scrollview--diagnostic-state-generation 0)
   (setq scrollview--spell-state-generation 0)
   (setq scrollview--vc-state-generation 0))
@@ -281,21 +284,22 @@ When STRING is non-nil, include it as the clicked string object."
   (let ((scrollview-signs-on-startup '(search diagnostics)))
     (scrollview--initialize-builtins)
     (should (scrollview-sign-group-active-p 'diagnostics))
-    (dolist (group '(conflicts keywords spell vc))
+    (dolist (group '(highlight-symbol conflicts keywords spell vc))
       (should-not (scrollview-sign-group-active-p group)))))
 
 (ert-deftest scrollview-startup-all-symbol-enables-all-groups ()
   (scrollview-test--reset-state)
   (let ((scrollview-signs-on-startup 'all))
     (scrollview--initialize-builtins)
-    (dolist (group '(search diagnostics conflicts keywords spell vc))
+    (dolist (group '(search highlight-symbol diagnostics conflicts
+                            keywords spell vc))
       (should (scrollview-sign-group-active-p group)))))
 
 (ert-deftest scrollview-builtins-register-new-sign-groups ()
   (scrollview-test--reset-state)
   (let ((scrollview-signs-on-startup nil))
     (scrollview--initialize-builtins)
-    (dolist (group '(conflicts keywords spell vc))
+    (dolist (group '(highlight-symbol conflicts keywords spell vc))
       (should (memq group (scrollview--sign-group-list))))
     (should-not (memq 'marks (scrollview--sign-group-list)))))
 
@@ -974,6 +978,20 @@ When STRING is non-nil, include it as the clicked string object."
                  #'ignore))
         (scrollview--after-isearch-update)))
     (should-not scrollview--last-search-pattern)))
+
+(ert-deftest scrollview-highlight-symbol-collector ()
+  (scrollview-test--reset-state)
+  (with-temp-buffer
+    (insert "alpha\nbeta alpha\ngamma beta\n")
+    (let ((highlight-symbol-keyword-alist
+           '(("\\_<alpha\\_>" 0 highlight prepend)))
+          (highlight-symbol "\\_<beta\\_>"))
+      (should (equal (scrollview--collect-highlight-symbol-lines nil)
+                     '(1 2 3))))
+    (let ((highlight-symbol-keyword-alist nil)
+          (highlight-symbol nil))
+      (cl-incf scrollview--highlight-symbol-state-generation)
+      (should-not (scrollview--collect-highlight-symbol-lines nil)))))
 
 (ert-deftest scrollview-conflict-collector ()
   (scrollview-test--reset-state)

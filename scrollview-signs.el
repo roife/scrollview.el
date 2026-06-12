@@ -25,10 +25,15 @@
 (declare-function diff-hl-changes-from-buffer "diff-hl" (buf))
 (declare-function flyspell-overlay-p "flyspell" (overlay))
 
+(defvar highlight-symbol)
+(defvar highlight-symbol-keyword-alist)
 (defvar hl-todo-keyword-faces)
 (defvar diff-hl-reference-revision)
 (defvar diff-hl-show-staged-changes)
 (defvar diff-hl-update-async)
+
+(defvar-local scrollview--highlight-symbol-state-generation 0
+  "Buffer-local generation incremented after highlight-symbol updates.")
 
 (defvar-local scrollview--vc-state-generation 0
   "Buffer-local generation incremented after diff-hl updates.")
@@ -193,6 +198,59 @@ literally with `search-forward'."
   "Collect diagnostic lines for LEVEL from Flymake and loaded Flycheck."
   (plist-get (scrollview--diagnostic-lines)
              (scrollview--variant-key level)))
+
+(defun scrollview--regexp-lines (pattern)
+  "Return buffer lines matching regexp PATTERN."
+  (let (lines)
+    (when (and (stringp pattern)
+               (not (string-empty-p pattern)))
+      (save-excursion
+        (save-match-data
+          (goto-char (point-min))
+          (condition-case nil
+              (catch 'done
+                (while (re-search-forward pattern nil t)
+                  (let ((line (line-number-at-pos (match-beginning 0) t)))
+                    (unless (eq line (car lines))
+                      (push line lines)))
+                  (when (= (match-beginning 0) (match-end 0))
+                    (if (eobp)
+                        (throw 'done nil)
+                      (forward-char 1)))))
+            (error nil)))))
+    (nreverse lines)))
+
+(defun scrollview--highlight-symbol-patterns ()
+  "Return active highlight-symbol regexps for the current buffer."
+  (let (patterns)
+    (when (boundp 'highlight-symbol-keyword-alist)
+      (dolist (entry highlight-symbol-keyword-alist)
+        (when-let ((pattern (car-safe entry)))
+          (when (and (stringp pattern)
+                     (not (string-empty-p pattern)))
+            (cl-pushnew pattern patterns :test #'equal)))))
+    (when (boundp 'highlight-symbol)
+      (when (and (stringp highlight-symbol)
+                 (not (string-empty-p highlight-symbol)))
+        (cl-pushnew highlight-symbol patterns :test #'equal)))
+    (nreverse patterns)))
+
+(defun scrollview--highlight-symbol-lines ()
+  "Return lines highlighted by highlight-symbol."
+  (let ((patterns (scrollview--highlight-symbol-patterns)))
+    (scrollview--cached-collector-value
+     'highlight-symbol
+     (list :tick (buffer-chars-modified-tick)
+           :generation scrollview--highlight-symbol-state-generation
+           :patterns patterns)
+     (lambda ()
+       (scrollview--dedupe-sorted-lines
+        (cl-loop for pattern in patterns
+                 append (scrollview--regexp-lines pattern)))))))
+
+(defun scrollview--collect-highlight-symbol-lines (_window)
+  "Collect lines highlighted by highlight-symbol."
+  (scrollview--highlight-symbol-lines))
 
 (defun scrollview--conflict-lines ()
   "Return smerge conflict marker lines as a plist."
@@ -427,6 +485,17 @@ literally with `search-forward'."
      :collector #'scrollview--collect-search-lines)
 
     (scrollview-register-sign-group
+     'highlight-symbol (scrollview--startup-sign-enabled-p
+                        'highlight-symbol))
+    (scrollview-register-sign-spec
+     :group 'highlight-symbol
+     :variant 'match
+     :priority 38
+     :bitmap 'scrollview-search-bitmap
+     :face 'scrollview-highlight-symbol-face
+     :collector #'scrollview--collect-highlight-symbol-lines)
+
+    (scrollview-register-sign-group
      'diagnostics (scrollview--startup-sign-enabled-p 'diagnostics))
     (scrollview-register-sign-spec
      :group 'diagnostics
@@ -525,6 +594,27 @@ literally with `search-forward'."
                              'lazy-highlight-cleanup)
       (advice-add 'lazy-highlight-cleanup
                   :after #'scrollview--after-lazy-highlight-cleanup))))
+
+
+(defun scrollview--after-highlight-symbol-update (&rest _)
+  "Refresh scrollview signs after highlight-symbol updates."
+  (when (bound-and-true-p scrollview-mode)
+    (cl-incf scrollview--highlight-symbol-state-generation)
+    (scrollview--invalidate-buffer-sign-cache)
+    (scrollview--schedule-buffer-refresh)))
+
+(with-eval-after-load 'highlight-symbol
+  (dolist (function '(highlight-symbol
+                      highlight-symbol-add-symbol
+                      highlight-symbol-remove-symbol
+                      highlight-symbol-remove-all
+                      highlight-symbol-temp-highlight
+                      highlight-symbol-mode-remove-temp))
+    (when (and (fboundp function)
+               (not (advice-member-p
+                     #'scrollview--after-highlight-symbol-update function)))
+      (advice-add function :after
+                  #'scrollview--after-highlight-symbol-update))))
 
 
 (defun scrollview--after-diagnostics-update (&rest _)
