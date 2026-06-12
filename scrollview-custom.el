@@ -13,15 +13,29 @@
 ;;; Customization
 
 (defgroup scrollview nil
-  "Fringe scrollbars and document signs."
+  "Scrollbars and document signs."
   :group 'convenience
   :prefix "scrollview-")
 
+(defcustom scrollview-area 'fringe
+  "Display area used by scrollview.
+The value `fringe' renders bitmap indicators in the fringe.  The value
+`margin' renders one-column text indicators in the window margin, which also
+works in terminal frames."
+  :type '(choice (const :tag "Fringe" fringe)
+                 (const :tag "Margin" margin))
+  :group 'scrollview)
+
 (defcustom scrollview-side 'right
-  "Fringe side used by scrollview.
+  "Side used by scrollview.
 The value must be either `right' or `left'."
-  :type '(choice (const :tag "Right fringe" right)
-                 (const :tag "Left fringe" left))
+  :type '(choice (const :tag "Right side" right)
+                 (const :tag "Left side" left))
+  :group 'scrollview)
+
+(defcustom scrollview-margin-width 1
+  "Minimum window margin width used when `scrollview-area' is `margin'."
+  :type 'natnum
   :group 'scrollview)
 
 (defcustom scrollview-visibility 'always
@@ -71,12 +85,12 @@ Use `all' to enable all built-in groups."
 
 (defcustom scrollview-scrollbar-priority 0
   "Priority of the scrollbar when it conflicts with signs.
-Higher priority signs replace the scrollbar for that fringe row."
+Higher priority signs replace the scrollbar for that display row."
   :type 'integer
   :group 'scrollview)
 
 (defcustom scrollview-overlay-priority 1000
-  "Overlay priority used for scrollview fringe indicators."
+  "Overlay priority used for rendered scrollview indicators."
   :type 'integer
   :group 'scrollview)
 

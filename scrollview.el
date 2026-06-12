@@ -1,4 +1,4 @@
-;;; scrollview.el --- Fringe scrollbars and document signs -*- lexical-binding: t; -*-
+;;; scrollview.el --- Scrollbars and document signs -*- lexical-binding: t; -*-
 
 ;; Copyright (C) 2026
 
@@ -12,8 +12,8 @@
 ;;; Commentary:
 
 ;; scrollview.el displays a vertical scrollbar and document signs in the
-;; selected fringe.  It is implemented with ordinary overlays and fringe
-;; display specs, not child frames.
+;; selected fringe or window margin.  It is implemented with ordinary overlays
+;; and display specs, not child frames.
 
 ;;; Code:
 

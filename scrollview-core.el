@@ -29,6 +29,9 @@
 (defvar scrollview--window-overlays (make-hash-table :test #'eq)
   "Hash table mapping windows to their scrollview overlays.")
 
+(defvar scrollview--window-margins (make-hash-table :test #'eq)
+  "Hash table mapping windows to margins saved before scrollview changed them.")
+
 (defvar scrollview--pending-windows (make-hash-table :test #'eq)
   "Hash table of windows queued for refresh.")
 
@@ -91,13 +94,17 @@
     (define-key map [mouse-1] #'scrollview-click)
     (define-key map [left-fringe mouse-1] #'scrollview-click)
     (define-key map [right-fringe mouse-1] #'scrollview-click)
+    (define-key map [left-margin mouse-1] #'scrollview-click)
+    (define-key map [right-margin mouse-1] #'scrollview-click)
     map)
-  "Keymap used on scrollview fringe display strings.")
+  "Keymap used on scrollview display strings.")
 
 (defvar scrollview-mode-map
   (let ((map (make-sparse-keymap)))
     (define-key map [left-fringe mouse-1] #'scrollview-click)
     (define-key map [right-fringe mouse-1] #'scrollview-click)
+    (define-key map [left-margin mouse-1] #'scrollview-click)
+    (define-key map [right-margin mouse-1] #'scrollview-click)
     map)
   "Keymap for `scrollview-mode'.")
 
@@ -167,8 +174,8 @@
     (line-number-at-pos (window-start window) t)))
 
 (defun scrollview--window-track-lines (window top-line buffer-lines)
-  "Return drawable fringe rows for WINDOW from TOP-LINE to BUFFER-LINES.
-Rows below `point-max' are empty display area and cannot reliably host fringe
+  "Return drawable display rows for WINDOW from TOP-LINE to BUFFER-LINES.
+Rows below `point-max' are empty display area and cannot reliably host
 overlays."
   (min (scrollview--window-line-height window)
        (max 1 (1+ (- buffer-lines top-line)))))
@@ -188,6 +195,56 @@ overlays."
       ('left (> (or left-width 0) 0))
       (_ (> (or right-width 0) 0)))))
 
+(defun scrollview--margin-area-p ()
+  "Return non-nil when scrollview renders in the window margin."
+  (eq scrollview-area 'margin))
+
+(defun scrollview--display-area-available-p (window)
+  "Return non-nil if WINDOW can display the configured scrollview area."
+  (if (scrollview--margin-area-p)
+      t
+    (scrollview--fringe-available-p window)))
+
+(defun scrollview--current-window-margins (window)
+  "Return WINDOW margins as a cons cell."
+  (let ((margins (window-margins window)))
+    (cons (car margins) (cdr margins))))
+
+(defun scrollview--ensure-window-margins (window)
+  "Ensure WINDOW has enough margin space for scrollview."
+  (when (and (window-live-p window)
+             (scrollview--margin-area-p)
+             (> scrollview-margin-width 0))
+    (unless (gethash window scrollview--window-margins)
+      (puthash window (scrollview--current-window-margins window)
+               scrollview--window-margins))
+    (let* ((saved (gethash window scrollview--window-margins))
+           (saved-left (car saved))
+           (saved-right (cdr saved))
+           (left-width saved-left)
+           (right-width saved-right))
+      (pcase scrollview-side
+        ('left
+         (setq left-width (max (or saved-left 0)
+                               scrollview-margin-width)))
+        (_
+         (setq right-width (max (or saved-right 0)
+                                scrollview-margin-width))))
+      (set-window-margins window left-width right-width))))
+
+(defun scrollview--restore-window-margins (window)
+  "Restore WINDOW margins saved by scrollview."
+  (when-let ((margins (gethash window scrollview--window-margins)))
+    (when (window-live-p window)
+      (set-window-margins window (car margins) (cdr margins)))
+    (remhash window scrollview--window-margins)))
+
+(defun scrollview--prepare-window-display-area (window)
+  "Prepare WINDOW to display scrollview in the configured area."
+  (if (scrollview--margin-area-p)
+      (scrollview--ensure-window-margins window)
+    (scrollview--restore-window-margins window)))
+
 (defun scrollview--excluded-mode-p ()
   "Return non-nil if the current buffer's mode is excluded."
   (and scrollview-excluded-modes
@@ -199,7 +256,7 @@ overlays."
        (not (window-minibuffer-p window))
        (or (not scrollview-current-window-only)
            (eq window (selected-window)))
-       (scrollview--fringe-available-p window)
+       (scrollview--display-area-available-p window)
        (with-current-buffer (window-buffer window)
          (and scrollview-mode
               (not (minibufferp))
@@ -216,6 +273,10 @@ overlays."
                (unless (window-live-p window)
                  (cl-pushnew window dead :test #'eq)))
              scrollview--window-sign-cache)
+    (maphash (lambda (window _margins)
+               (unless (window-live-p window)
+                 (cl-pushnew window dead :test #'eq)))
+             scrollview--window-margins)
     (dolist (window dead)
       (scrollview--delete-window-overlays window)
       (remhash window scrollview--window-sign-cache))))
@@ -224,7 +285,8 @@ overlays."
   "Delete scrollview overlays for WINDOW."
   (when-let ((overlays (gethash window scrollview--window-overlays)))
     (mapc #'delete-overlay overlays)
-    (remhash window scrollview--window-overlays)))
+    (remhash window scrollview--window-overlays))
+  (scrollview--restore-window-margins window))
 
 (defun scrollview--delete-buffer-overlays (&optional buffer)
   "Delete scrollview overlays for windows showing BUFFER."
@@ -291,7 +353,7 @@ BOTTOM-VISIBLE should be non-nil when point-max is visible."
                                (max 1 (1- buffer-lines)))))))))))
 
 (defun scrollview--line-to-row (line window-lines buffer-lines)
-  "Map one-based document LINE to a zero-based fringe row."
+  "Map one-based document LINE to a zero-based display row."
   (let* ((window-lines (max 1 window-lines))
          (buffer-lines (max 1 buffer-lines))
          (line (min buffer-lines (max 1 line))))
@@ -303,7 +365,7 @@ BOTTOM-VISIBLE should be non-nil when point-max is visible."
                                (max 1 (1- buffer-lines))))))))))
 
 (defun scrollview--row-to-line (row window-lines buffer-lines)
-  "Map zero-based fringe ROW to a one-based document line."
+  "Map zero-based display ROW to a one-based document line."
   (let* ((window-lines (max 1 window-lines))
          (buffer-lines (max 1 buffer-lines))
          (row (min (1- window-lines) (max 0 row))))
@@ -361,8 +423,9 @@ ARGS is a plist accepting:
   :variant VARIANT      Optional variant name.
   :priority N           Larger values win row conflicts; default 50.
   :bitmap BITMAP        Fringe bitmap symbol; default
-                        `scrollview-sign-dot-bitmap'.
-  :face FACE            Face used for the bitmap.
+                        `scrollview-sign-dot-bitmap'.  Margin rendering maps
+                        the bitmap and variant to a text indicator.
+  :face FACE            Face used for the indicator.
   :collector FUNCTION   Called with a window and returns line numbers.
   :current-only BOOL    When non-nil, show only in the selected window."
   (let* ((group (scrollview--normalize-group (plist-get args :group)))
@@ -557,7 +620,7 @@ matches.  Fresh collections always update the cache."
       (aset slots row slot))))
 
 (defun scrollview--build-slots (_window info sign-items)
-  "Return fringe slots using INFO and SIGN-ITEMS."
+  "Return display slots using INFO and SIGN-ITEMS."
   (let* ((window-lines (plist-get info :window-lines))
          (track-lines (or (plist-get info :track-lines) window-lines))
          (buffer-lines (plist-get info :buffer-lines))
@@ -606,20 +669,61 @@ matches.  Fresh collections always update the cache."
     slots))
 
 (defun scrollview--overlay-position-at-point ()
-  "Return the buffer position for a fringe overlay at point."
+  "Return the buffer position for a scrollview overlay at point."
   (let ((pos (point)))
     (if (= pos (line-end-position))
         pos
       (min (point-max) (1+ pos)))))
 
 (defun scrollview--overlay-display-side ()
-  "Return the fringe display side for `scrollview-side'."
-  (if (eq scrollview-side 'left) 'left-fringe 'right-fringe))
+  "Return the display side for `scrollview-area' and `scrollview-side'."
+  (if (scrollview--margin-area-p)
+      (if (eq scrollview-side 'left) 'left-margin 'right-margin)
+    (if (eq scrollview-side 'left) 'left-fringe 'right-fringe)))
+
+(defun scrollview--margin-glyph (slot)
+  "Return a one-column margin glyph for SLOT."
+  (pcase (list (plist-get slot :type)
+               (plist-get slot :group)
+               (plist-get slot :variant)
+               (plist-get slot :bitmap))
+    (`(scrollbar . ,_) "|")
+    (`(sign keywords todo . ,_) "T")
+    (`(sign keywords fixme . ,_) "F")
+    (`(sign keywords hack . ,_) "H")
+    (`(sign keywords note . ,_) "N")
+    (`(sign conflicts top . ,_) "<")
+    (`(sign conflicts middle . ,_) "=")
+    (`(sign conflicts bottom . ,_) ">")
+    (`(sign bookmarks . ,_) "*")
+    (`(sign spell . ,_) "~")
+    (`(sign vc add . ,_) "+")
+    (`(sign vc change . ,_) "|")
+    (`(sign vc delete . ,_) "-")
+    (`(sign _ _ scrollview-symbol-bitmap) "+")
+    (`(sign _ _ scrollview-search-bitmap) "=")
+    (`(sign _ _ scrollview-diagnostic-bitmap) "!")
+    (`(sign _ _ scrollview-sign-bar-bitmap) "|")
+    (`(sign _ _ scrollview-sign-delete-bitmap) "-")
+    (_ "*")))
+
+(defun scrollview--propertized-display-string
+    (string face target-line target-type &rest properties)
+  "Return STRING carrying scrollview display properties."
+  (apply #'propertize string
+         'face face
+         'keymap scrollview--mouse-map
+         'mouse-face 'highlight
+         'scrollview-target-line target-line
+         'scrollview-target-type target-type
+         properties))
 
 (defun scrollview--overlay-render-state (slot target-line)
   "Return the rendered overlay state for SLOT and TARGET-LINE."
   (list :side (scrollview--overlay-display-side)
         :bitmap (plist-get slot :bitmap)
+        :margin-glyph (and (scrollview--margin-area-p)
+                           (scrollview--margin-glyph slot))
         :face (plist-get slot :face)
         :target-line target-line
         :target-type (plist-get slot :type)
@@ -627,14 +731,20 @@ matches.  Fresh collections always update the cache."
         :priority scrollview-overlay-priority))
 
 (defun scrollview--overlay-after-string (slot target-line)
-  "Return the fringe after-string for SLOT and TARGET-LINE."
-  (propertize "." 'display `(,(scrollview--overlay-display-side)
-                             ,(plist-get slot :bitmap)
-                             ,(plist-get slot :face))
-              'keymap scrollview--mouse-map
-              'mouse-face 'highlight
-              'scrollview-target-line target-line
-              'scrollview-target-type (plist-get slot :type)))
+  "Return the after-string for SLOT and TARGET-LINE."
+  (let* ((face (plist-get slot :face))
+         (target-type (plist-get slot :type))
+         (display
+          (if (scrollview--margin-area-p)
+              `((margin ,(scrollview--overlay-display-side))
+                ,(scrollview--propertized-display-string
+                  (scrollview--margin-glyph slot) face target-line target-type))
+            `(,(scrollview--overlay-display-side)
+              ,(plist-get slot :bitmap)
+              ,face))))
+    (scrollview--propertized-display-string
+     "." face target-line target-type
+     'display display)))
 
 (defun scrollview--update-overlay-at-point (overlay window row slot target-line)
   "Move and update OVERLAY for WINDOW, ROW, SLOT, and TARGET-LINE."
@@ -709,6 +819,7 @@ valid."
         (if (scrollview--should-render-p info sign-items)
             (let ((slots (scrollview--build-slots window info sign-items))
                   overlays)
+              (scrollview--prepare-window-display-area window)
               (pcase-let ((`(,by-row ,spare)
                            (scrollview--current-window-overlays window)))
                 (with-selected-window window
@@ -798,7 +909,7 @@ eligible windows."
 
 (defun scrollview--after-window-scroll (window _start)
   "Refresh WINDOW immediately after it scrolls.
-Keeping this synchronous prevents stale fringe overlays from riding along with
+Keeping this synchronous prevents stale scrollview overlays from riding along with
 the text for one redisplay frame before the debounced refresh corrects them."
   (scrollview--refresh-now window t))
 
@@ -840,9 +951,9 @@ the text for one redisplay frame before the debounced refresh corrects them."
 
 ;;; Mouse navigation
 
-(defun scrollview--fringe-area ()
-  "Return the fringe area symbol for `scrollview-side'."
-  (if (eq scrollview-side 'left) 'left-fringe 'right-fringe))
+(defun scrollview--click-area ()
+  "Return the mouse area symbol for the configured display area."
+  (scrollview--overlay-display-side))
 
 (defun scrollview--event-row (position)
   "Return zero-based window row for mouse POSITION."
@@ -886,7 +997,7 @@ When SET-START is non-nil, also make LINE the window start."
          (area (posn-area position)))
     (if (and (window-live-p window)
              (eq area (with-current-buffer (window-buffer window)
-                        (scrollview--fringe-area))))
+                        (scrollview--click-area))))
         (with-current-buffer (window-buffer window)
           (let* ((line (or (mouse-posn-property
                             position 'scrollview-target-line)
@@ -1002,7 +1113,7 @@ When GROUPS is non-nil, only those sign groups are considered."
 
 ;;;###autoload
 (define-minor-mode scrollview-mode
-  "Display a fringe scrollbar and document signs in the current buffer."
+  "Display a scrollbar and document signs in the current buffer."
   :lighter " sv"
   :group 'scrollview
   :keymap scrollview-mode-map

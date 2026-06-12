@@ -1,9 +1,10 @@
 # scrollview.el
 
-Fringe scrollbar and document signs for Emacs.
+Scrollbar and document signs for Emacs.
 
-`scrollview.el` renders into the left or right fringe with ordinary overlays and
-fringe display specs.  It does not use child frames.
+`scrollview.el` renders into the left or right fringe, or into a one-column
+window margin for terminal frames, with ordinary overlays and display specs.  It
+does not use child frames.
 
 **Requirements**: Emacs 29.1 or newer
 
@@ -24,7 +25,8 @@ For one buffer only:
 ## Configuration
 
 ```elisp
-(setq scrollview-side 'right
+(setq scrollview-area 'fringe
+      scrollview-side 'right
       scrollview-visibility 'always
       scrollview-signs-on-startup 'all)
 ```
@@ -41,22 +43,28 @@ Common alternatives:
 ;; Hide signs in very large buffers.
 (setq scrollview-line-limit 20000
       scrollview-byte-limit 1000000)
+
+;; Use one-column margin indicators in terminal frames.
+(setq scrollview-area 'margin
+      scrollview-side 'right)
 ```
 
 ### Options
 
 | Option | Default | Meaning |
 | --- | --- | --- |
-| `scrollview-side` | `right` | Fringe side.  Use `right` or `left`. |
-| `scrollview-visibility` | `always` | `always`, `overflow`, or `info`.  `info` shows the fringe when the buffer overflows or signs exist. |
+| `scrollview-area` | `fringe` | Display area.  Use `fringe` for bitmap indicators or `margin` for terminal-friendly text indicators. |
+| `scrollview-side` | `right` | Display side.  Use `right` or `left`. |
+| `scrollview-margin-width` | `1` | Minimum margin width allocated when `scrollview-area` is `margin`. |
+| `scrollview-visibility` | `always` | `always`, `overflow`, or `info`.  `info` shows indicators when the buffer overflows or signs exist. |
 | `scrollview-current-window-only` | `nil` | Show only in the selected window. |
 | `scrollview-excluded-modes` | `(image-mode doc-view-mode pdf-view-mode)` | Major modes, including derived modes, where scrollview is disabled. |
 | `scrollview-line-limit` | `20000` | Above this line count, restricted mode disables signs.  Set to `-1` to disable the limit. |
 | `scrollview-byte-limit` | `1000000` | Above this buffer size, restricted mode disables signs.  Set to `-1` to disable the limit. |
 | `scrollview-signs-on-startup` | `all` | Built-in sign groups enabled on first use.  Use `all`, `nil`, or a list of group symbols. |
 | `scrollview-refresh-delay` | `0.03` | Idle delay, in seconds, for scheduled refreshes. |
-| `scrollview-scrollbar-priority` | `0` | Scrollbar priority when a sign lands on the same fringe row. |
-| `scrollview-overlay-priority` | `1000` | Overlay priority used for rendered fringe indicators. |
+| `scrollview-scrollbar-priority` | `0` | Scrollbar priority when a sign lands on the same display row. |
+| `scrollview-overlay-priority` | `1000` | Overlay priority used for rendered indicators. |
 | `scrollview-wrap-navigation` | `t` | `scrollview-next` and `scrollview-prev` wrap around buffer ends. |
 
 Restricted mode keeps the scrollbar and skips sign collection.
@@ -100,7 +108,7 @@ Enable, disable, or toggle groups at runtime:
 | `scrollview-prev` | Jump to the previous visible sign. |
 | `scrollview-first` | Jump to the first visible sign. |
 | `scrollview-last` | Jump to the last visible sign. |
-| `scrollview-click` | Mouse command for fringe clicks. |
+| `scrollview-click` | Mouse command for fringe or margin clicks. |
 | `scrollview-legend` | Show registered sign specs, priorities, faces, and states. |
 | `scrollview-enable-sign-group` | Enable a sign group. |
 | `scrollview-disable-sign-group` | Disable a sign group. |
@@ -111,14 +119,15 @@ Enable, disable, or toggle groups at runtime:
 
 ## Mouse
 
-Click the configured fringe to jump to the corresponding document position.
+Click the configured fringe or margin to jump to the corresponding document
+position.
 Click a visible sign to jump to that sign's line.
 
 Mouse drag is not implemented.
 
 ## Rendering Rules
 
-- One fringe slot is used per window row.
+- One display slot is used per window row.
 - Higher priority wins when multiple items map to the same row.
 - At equal priority, the earlier registered sign spec wins.
 - A sign that replaces the scrollbar thumb uses the thumb background.
