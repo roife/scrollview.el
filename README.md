@@ -76,19 +76,19 @@ Restricted mode keeps the scrollbar and skips sign collection.
 
 ## Built-In Signs
 
-| Group | Source | Variants |
-| --- | --- | --- |
-| `search` | Active isearch, or retained lazy-highlight overlays after isearch exits | `match` |
-| `highlight-symbol` | `highlight-symbol` highlighted regexps, when `highlight-symbol` is loaded | `match` |
-| `symbol-overlay` | `symbol-overlay` overlays, when `symbol-overlay` is loaded | `match` |
-| `bookmarks` | File bookmarks from `bookmark-alist` | `bookmark` |
-| `eglot` | Existing Eglot document-highlight overlays | `highlight` |
-| `diagnostics` | Flymake diagnostics and Flycheck errors when Flycheck is loaded | `error`, `warning`, `info` |
-| `compilation` | Parsed `compilation-mode` messages, excluding `grep-mode` buffers | `error`, `warning`, `info` |
-| `conflicts` | `smerge-mode` conflict markers | `top`, `middle`, `bottom` |
-| `keywords` | `hl-todo` keywords from `hl-todo-keyword-faces` | One variant per configured keyword |
-| `spell` | Flyspell overlays | `misspelled` |
-| `vc` | `diff-hl` hunks | `add`, `change`, `delete` |
+| Group | Source | Variants | Fringe symbol | Margin glyph |
+| --- | --- | --- | --- | --- |
+| `search` | Active isearch, or retained lazy-highlight overlays after isearch exits | `match` | `=` | `=` |
+| `highlight-symbol` | `highlight-symbol` highlighted regexps, when `highlight-symbol` is loaded | `match` | `+` | `+` |
+| `symbol-overlay` | `symbol-overlay` overlays, when `symbol-overlay` is loaded | `match` | `+` | `+` |
+| `bookmarks` | File bookmarks from `bookmark-alist` | `bookmark` | `*` | `*` |
+| `eglot` | Existing Eglot document-highlight overlays | `highlight` | `=` | `=` |
+| `diagnostics` | Flymake diagnostics and Flycheck errors when Flycheck is loaded | `error`, `warning`, `info` | `o` | `!` |
+| `compilation` | Parsed `compilation-mode` messages, excluding `grep-mode` buffers | `error`, `warning`, `info` | `o` | `!` |
+| `conflicts` | `smerge-mode` conflict markers | `top`, `middle`, `bottom` | `*` | `top` `<`, `middle` `=`, `bottom` `>` |
+| `keywords` | `hl-todo` keywords from `hl-todo-keyword-faces` | One variant per configured keyword; `TRICK(R)` becomes `trick-r` | `TODO` `T`, `FIXME` `F`, `HACK` `H`, `NOTE` `N`, `WORKAROUND` `W`, `TRICK(R)` `R`, `DEFECT` `D`, `ISSUE` `I`, other keywords `*` | `TODO` `T`, `FIXME` `F`, `HACK` `H`, `NOTE` `N`, `WORKAROUND` `W`, `TRICK(R)` `R`, `DEFECT` `D`, `ISSUE` `I`, other keywords `*` |
+| `spell` | Flyspell overlays | `misspelled` | `~` | `~` |
+| `vc` | `diff-hl` hunks | `add`, `change`, `delete` | `add` and `change` <code>&#124;</code>, `delete` `=` | `add` `+`, `change` <code>&#124;</code>, `delete` `-` |
 
 All built-in groups are enabled by default.  Groups backed by optional packages
 produce signs only when their package is available and has data for the current

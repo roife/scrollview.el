@@ -566,13 +566,21 @@ literally with `search-forward'."
     ('fixme 'scrollview-keyword-fixme-face)
     ('hack 'scrollview-keyword-hack-face)
     ('note 'scrollview-keyword-note-face)
+    ('workaround 'scrollview-keyword-workaround-face)
+    ('trick-r 'scrollview-keyword-trick-r-face)
+    ('defect 'scrollview-keyword-defect-face)
+    ('issue 'scrollview-keyword-issue-face)
     (_ 'scrollview-keyword-face)))
 
 (defun scrollview--keyword-priority (variant)
   "Return the sign priority for keyword VARIANT."
   (pcase variant
     ('fixme 65)
+    ('defect 65)
+    ('issue 65)
     ('hack 55)
+    ('workaround 55)
+    ('trick-r 55)
     ('todo 55)
     ('note 35)
     (_ 45)))

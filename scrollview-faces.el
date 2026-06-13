@@ -120,6 +120,26 @@ scrollview is loaded and after themes are enabled."
   "Face for NOTE keyword signs."
   :group 'scrollview)
 
+(defface scrollview-keyword-workaround-face
+  '((t (:inherit warning)))
+  "Face for WORKAROUND keyword signs."
+  :group 'scrollview)
+
+(defface scrollview-keyword-trick-r-face
+  '((t (:inherit warning)))
+  "Face for TRICK(R) keyword signs."
+  :group 'scrollview)
+
+(defface scrollview-keyword-defect-face
+  '((t (:inherit error)))
+  "Face for DEFECT keyword signs."
+  :group 'scrollview)
+
+(defface scrollview-keyword-issue-face
+  '((t (:inherit error)))
+  "Face for ISSUE keyword signs."
+  :group 'scrollview)
+
 (defface scrollview-keyword-face
   '((t (:inherit font-lock-keyword-face)))
   "Fallback face for keyword signs."
@@ -173,8 +193,12 @@ The foreground is synchronized from `diff-removed'."
 (define-fringe-bitmap 'scrollview-sign-delete-bitmap
   [0 0 0 126 126 0 0 0] nil nil 'center)
 
+(defconst scrollview--spell-bitmap-vector
+  [0 0 0 54 126 108 0 0]
+  "Bitmap vector for spell signs.")
+
 (define-fringe-bitmap 'scrollview-spell-bitmap
-  [0 0 0 96 48 24 12 0] nil nil 'center)
+  scrollview--spell-bitmap-vector nil nil 'center)
 
 (define-fringe-bitmap 'scrollview-keyword-todo-bitmap
   [0 126 126 24 24 24 24 0] nil nil 'center)
@@ -188,6 +212,18 @@ The foreground is synchronized from `diff-removed'."
 (define-fringe-bitmap 'scrollview-keyword-note-bitmap
   [0 102 118 126 126 110 102 0] nil nil 'center)
 
+(define-fringe-bitmap 'scrollview-keyword-workaround-bitmap
+  [0 102 102 126 126 126 60 0] nil nil 'center)
+
+(define-fringe-bitmap 'scrollview-keyword-trick-r-bitmap
+  [0 124 102 124 120 108 102 0] nil nil 'center)
+
+(define-fringe-bitmap 'scrollview-keyword-defect-bitmap
+  [0 120 108 102 102 108 120 0] nil nil 'center)
+
+(define-fringe-bitmap 'scrollview-keyword-issue-bitmap
+  [0 126 24 24 24 24 126 0] nil nil 'center)
+
 (define-fringe-bitmap 'scrollview-keyword-bitmap
   [0 24 60 126 60 24 0 0] nil nil 'center)
 
@@ -198,6 +234,10 @@ The foreground is synchronized from `diff-removed'."
     ('fixme 'scrollview-keyword-fixme-bitmap)
     ('hack 'scrollview-keyword-hack-bitmap)
     ('note 'scrollview-keyword-note-bitmap)
+    ('workaround 'scrollview-keyword-workaround-bitmap)
+    ('trick-r 'scrollview-keyword-trick-r-bitmap)
+    ('defect 'scrollview-keyword-defect-bitmap)
+    ('issue 'scrollview-keyword-issue-bitmap)
     (_ 'scrollview-keyword-bitmap)))
 
 (defvar scrollview--sign-render-face-cache (make-hash-table :test #'equal)
