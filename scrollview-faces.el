@@ -190,6 +190,9 @@ The foreground is synchronized from `diff-removed'."
 (define-fringe-bitmap 'scrollview-sign-dot-bitmap
   [0 24 60 126 126 60 24 0] nil nil 'center)
 
+(define-fringe-bitmap 'scrollview-bookmark-bitmap
+  [0 96 102 12 24 48 102 6] nil nil 'center)
+
 (defconst scrollview--vc-bar-bitmap-vector
   [24 24 24 24 24 24 24 24
    24 24 24 24 24 24 24 24

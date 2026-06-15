@@ -78,20 +78,20 @@ Restricted mode keeps the scrollbar and skips sign collection.
 
 ## Built-In Signs
 
-| Group | Source | Variants | Fringe symbol | Margin glyph |
-| --- | --- | --- | --- | --- |
-| `search` | Active isearch, or retained lazy-highlight overlays after isearch exits | `match` | `=` | `=` |
-| `highlight-symbol` | `highlight-symbol` highlighted regexps, when `highlight-symbol` is loaded | `match` | `+` | `+` |
-| `highlight-changes` | `highlight-changes-mode` changes, only while `highlight-changes-visible-mode` is enabled | `change`, `delete` | `change` `C`, `delete` `X` | `change` `C`, `delete` `X` |
-| `symbol-overlay` | `symbol-overlay` overlays, when `symbol-overlay` is loaded | `match` | `=` | `=` |
-| `bookmarks` | File bookmarks from `bookmark-alist` | `bookmark` | `*` | `*` |
-| `eglot` | Existing Eglot document-highlight overlays | `highlight` | `=` | `=` |
-| `diagnostics` | Flymake diagnostics and Flycheck errors when Flycheck is loaded | `error`, `warning`, `info` | `o` | `!` |
-| `compilation` | Parsed `compilation-mode` messages, excluding `grep-mode` buffers | `error`, `warning`, `info` | `o` | `!` |
-| `conflicts` | `smerge-mode` conflict markers | `top`, `middle`, `bottom` | `*` | `top` `<`, `middle` `=`, `bottom` `>` |
-| `keywords` | `hl-todo` keywords from `hl-todo-keyword-faces` | One variant per configured keyword; `TRICK(R)` becomes `trick-r` | `TODO` `T`, `FIXME` `F`, `HACK` `H`, `NOTE` `N`, `WORKAROUND` `W`, `TRICK(R)` `R`, `DEFECT` `D`, `ISSUE` `I`, other keywords `*` | `TODO` `T`, `FIXME` `F`, `HACK` `H`, `NOTE` `N`, `WORKAROUND` `W`, `TRICK(R)` `R`, `DEFECT` `D`, `ISSUE` `I`, other keywords `*` |
-| `spell` | Flyspell overlays | `misspelled` | `~` | `~` |
-| `vc` | `diff-hl` hunks | `add`, `change`, `delete` | `add` and `change` <code>&#124;</code>, `delete` `=` | `add` `+`, `change` <code>&#124;</code>, `delete` `-` |
+| Group | Source | Variants | Default priority | Default face | Fringe symbol | Margin glyph |
+| --- | --- | --- | --- | --- | --- | --- |
+| `search` | Active isearch, or retained lazy-highlight overlays after isearch exits | `match` | `100` | `scrollview-search-face` | `=` | `=` |
+| `highlight-symbol` | `highlight-symbol` highlighted regexps, when `highlight-symbol` is loaded | `match` | `70` | `scrollview-highlight-symbol-face` | `=` | `=` |
+| `highlight-changes` | `highlight-changes-mode` changes, only while `highlight-changes-visible-mode` is enabled | `change`, `delete` | `80` | `change` `scrollview-highlight-changes-face`, `delete` `scrollview-highlight-changes-delete-face` | `change` `C`, `delete` `X` | `change` `C`, `delete` `X` |
+| `symbol-overlay` | `symbol-overlay` overlays, when `symbol-overlay` is loaded | `match` | `90` | `scrollview-symbol-overlay-face` | `=` | `=` |
+| `bookmarks` | File bookmarks from `bookmark-alist` | `bookmark` | `30` | `scrollview-bookmark-face` | `%` | `%` |
+| `eglot` | Existing Eglot document-highlight overlays | `highlight` | `90` | `scrollview-eglot-face` | `=` | `=` |
+| `diagnostics` | Flymake diagnostics and Flycheck errors when Flycheck is loaded | `error`, `warning`, `info` | `error` `60`, `warning` `58`, `info` `35` | `error` `scrollview-diagnostic-error-face`, `warning` `scrollview-diagnostic-warning-face`, `info` `scrollview-diagnostic-info-face` | `o` | `!` |
+| `compilation` | Parsed `compilation-mode` messages, excluding `grep-mode` buffers | `error`, `warning`, `info` | `error` `60`, `warning` `58`, `info` `35` | `error` `scrollview-compilation-error-face`, `warning` `scrollview-compilation-warning-face`, `info` `scrollview-compilation-info-face` | `o` | `!` |
+| `conflicts` | `smerge-mode` conflict markers | `top`, `middle`, `bottom` | `70` | `top` `scrollview-conflict-top-face`, `middle` `scrollview-conflict-middle-face`, `bottom` `scrollview-conflict-bottom-face` | `*` | `top` `<`, `middle` `=`, `bottom` `>` |
+| `keywords` | `hl-todo` keywords from `hl-todo-keyword-faces` | One variant per configured keyword; `TRICK(R)` becomes `trick-r` | `TODO` `30`, `FIXME` `20`, `HACK` `20`, `NOTE` `15`, `WORKAROUND` `20`, `TRICK(R)` `20`, `DEFECT` `20`, `ISSUE` `25`, other keywords `10` | `TODO` `scrollview-keyword-todo-face`, `FIXME` `scrollview-keyword-fixme-face`, `HACK` `scrollview-keyword-hack-face`, `NOTE` `scrollview-keyword-note-face`, `WORKAROUND` `scrollview-keyword-workaround-face`, `TRICK(R)` `scrollview-keyword-trick-r-face`, `DEFECT` `scrollview-keyword-defect-face`, `ISSUE` `scrollview-keyword-issue-face`, other keywords `scrollview-keyword-face` | `TODO` `T`, `FIXME` `F`, `HACK` `H`, `NOTE` `N`, `WORKAROUND` `W`, `TRICK(R)` `R`, `DEFECT` `D`, `ISSUE` `I`, other keywords `*` | `TODO` `T`, `FIXME` `F`, `HACK` `H`, `NOTE` `N`, `WORKAROUND` `W`, `TRICK(R)` `R`, `DEFECT` `D`, `ISSUE` `I`, other keywords `*` |
+| `spell` | Flyspell overlays | `misspelled` | `50` | `scrollview-spell-face` | `~` | `~` |
+| `vc` | `diff-hl` hunks | `add`, `change`, `delete` | `40` | `add` `scrollview-vc-add-face`, `change` `scrollview-vc-change-face`, `delete` `scrollview-vc-delete-face` | `add` and `change` <code>&#124;</code>, `delete` `=` | `add` `+`, `change` <code>&#124;</code>, `delete` `-` |
 
 All built-in groups are enabled by default.  Groups backed by optional packages
 produce signs only when their package is available and has data for the current

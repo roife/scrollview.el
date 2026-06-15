@@ -728,7 +728,7 @@ matches.  Fresh collections always update the cache."
     (`(sign conflicts top . ,_) "<")
     (`(sign conflicts middle . ,_) "=")
     (`(sign conflicts bottom . ,_) ">")
-    (`(sign bookmarks . ,_) "*")
+    (`(sign bookmarks . ,_) "%")
     (`(sign spell . ,_) "~")
     (`(sign vc add . ,_) "+")
     (`(sign vc change . ,_) "|")

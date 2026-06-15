@@ -628,15 +628,11 @@ literally with `search-forward'."
 (defun scrollview--keyword-priority (variant)
   "Return the sign priority for keyword VARIANT."
   (pcase variant
-    ('fixme 65)
-    ('defect 65)
-    ('issue 65)
-    ('hack 55)
-    ('workaround 55)
-    ('trick-r 55)
-    ('todo 55)
-    ('note 35)
-    (_ 45)))
+    ('todo 30)
+    ('issue 25)
+    ((or 'fixme 'hack 'workaround 'trick-r 'defect) 20)
+    ('note 15)
+    (_ 10)))
 
 (defun scrollview--hl-todo-available-p ()
   "Return non-nil when hl-todo can provide keyword matching."
@@ -820,7 +816,7 @@ literally with `search-forward'."
     (scrollview-register-sign-spec
      :group 'search
      :variant 'match
-     :priority 70
+     :priority 100
      :bitmap 'scrollview-search-bitmap
      :face 'scrollview-search-face
      :collector #'scrollview--collect-search-lines)
@@ -831,8 +827,8 @@ literally with `search-forward'."
     (scrollview-register-sign-spec
      :group 'highlight-symbol
      :variant 'match
-     :priority 38
-     :bitmap 'scrollview-symbol-bitmap
+     :priority 70
+     :bitmap 'scrollview-search-bitmap
      :face 'scrollview-highlight-symbol-face
      :collector #'scrollview--collect-highlight-symbol-lines)
 
@@ -842,7 +838,7 @@ literally with `search-forward'."
     (scrollview-register-sign-spec
      :group 'highlight-changes
      :variant 'change
-     :priority 32
+     :priority 80
      :bitmap 'scrollview-highlight-changes-bitmap
      :face 'scrollview-highlight-changes-face
      :collector (apply-partially #'scrollview--collect-highlight-changes-lines
@@ -850,7 +846,7 @@ literally with `search-forward'."
     (scrollview-register-sign-spec
      :group 'highlight-changes
      :variant 'delete
-     :priority 32
+     :priority 80
      :bitmap 'scrollview-highlight-changes-delete-bitmap
      :face 'scrollview-highlight-changes-delete-face
      :collector (apply-partially #'scrollview--collect-highlight-changes-lines
@@ -861,7 +857,7 @@ literally with `search-forward'."
     (scrollview-register-sign-spec
      :group 'symbol-overlay
      :variant 'match
-     :priority 39
+     :priority 90
      :bitmap 'scrollview-search-bitmap
      :face 'scrollview-symbol-overlay-face
      :collector #'scrollview--collect-symbol-overlay-lines)
@@ -871,8 +867,8 @@ literally with `search-forward'."
     (scrollview-register-sign-spec
      :group 'bookmarks
      :variant 'bookmark
-     :priority 75
-     :bitmap 'scrollview-sign-dot-bitmap
+     :priority 30
+     :bitmap 'scrollview-bookmark-bitmap
      :face 'scrollview-bookmark-face
      :collector #'scrollview--collect-bookmark-lines)
 
@@ -881,7 +877,7 @@ literally with `search-forward'."
     (scrollview-register-sign-spec
      :group 'eglot
      :variant 'highlight
-     :priority 38
+     :priority 90
      :bitmap 'scrollview-search-bitmap
      :face 'scrollview-eglot-face
      :collector #'scrollview--collect-eglot-highlight-lines)
@@ -899,7 +895,7 @@ literally with `search-forward'."
     (scrollview-register-sign-spec
      :group 'diagnostics
      :variant 'warning
-     :priority 50
+     :priority 58
      :bitmap 'scrollview-diagnostic-bitmap
      :face 'scrollview-diagnostic-warning-face
      :collector (apply-partially #'scrollview--collect-diagnostic-lines
@@ -907,7 +903,7 @@ literally with `search-forward'."
     (scrollview-register-sign-spec
      :group 'diagnostics
      :variant 'info
-     :priority 40
+     :priority 35
      :bitmap 'scrollview-diagnostic-bitmap
      :face 'scrollview-diagnostic-info-face
      :collector (apply-partially #'scrollview--collect-diagnostic-lines
@@ -926,7 +922,7 @@ literally with `search-forward'."
     (scrollview-register-sign-spec
      :group 'compilation
      :variant 'warning
-     :priority 50
+     :priority 58
      :bitmap 'scrollview-diagnostic-bitmap
      :face 'scrollview-compilation-warning-face
      :collector (apply-partially #'scrollview--collect-compilation-lines
@@ -934,7 +930,7 @@ literally with `search-forward'."
     (scrollview-register-sign-spec
      :group 'compilation
      :variant 'info
-     :priority 40
+     :priority 35
      :bitmap 'scrollview-diagnostic-bitmap
      :face 'scrollview-compilation-info-face
      :collector (apply-partially #'scrollview--collect-compilation-lines
@@ -945,7 +941,7 @@ literally with `search-forward'."
     (scrollview-register-sign-spec
      :group 'conflicts
      :variant 'top
-     :priority 80
+     :priority 70
      :bitmap 'scrollview-sign-dot-bitmap
      :face 'scrollview-conflict-top-face
      :collector (apply-partially #'scrollview--collect-conflict-lines
@@ -953,7 +949,7 @@ literally with `search-forward'."
     (scrollview-register-sign-spec
      :group 'conflicts
      :variant 'middle
-     :priority 80
+     :priority 70
      :bitmap 'scrollview-sign-dot-bitmap
      :face 'scrollview-conflict-middle-face
      :collector (apply-partially #'scrollview--collect-conflict-lines
@@ -961,7 +957,7 @@ literally with `search-forward'."
     (scrollview-register-sign-spec
      :group 'conflicts
      :variant 'bottom
-     :priority 80
+     :priority 70
      :bitmap 'scrollview-sign-dot-bitmap
      :face 'scrollview-conflict-bottom-face
      :collector (apply-partially #'scrollview--collect-conflict-lines
@@ -977,7 +973,7 @@ literally with `search-forward'."
     (scrollview-register-sign-spec
      :group 'spell
      :variant 'misspelled
-     :priority 35
+     :priority 50
      :bitmap 'scrollview-spell-bitmap
      :face 'scrollview-spell-face
      :collector #'scrollview--collect-spell-lines)
@@ -987,21 +983,21 @@ literally with `search-forward'."
     (scrollview-register-sign-spec
      :group 'vc
      :variant 'add
-     :priority 30
+     :priority 40
      :bitmap 'scrollview-sign-bar-bitmap
      :face 'scrollview-vc-add-face
      :collector (apply-partially #'scrollview--collect-vc-lines 'add))
     (scrollview-register-sign-spec
      :group 'vc
      :variant 'change
-     :priority 30
+     :priority 40
      :bitmap 'scrollview-sign-bar-bitmap
      :face 'scrollview-vc-change-face
      :collector (apply-partially #'scrollview--collect-vc-lines 'change))
     (scrollview-register-sign-spec
      :group 'vc
      :variant 'delete
-     :priority 30
+     :priority 40
      :bitmap 'scrollview-sign-delete-bitmap
      :face 'scrollview-vc-delete-face
      :collector (apply-partially #'scrollview--collect-vc-lines 'delete))
