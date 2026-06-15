@@ -733,6 +733,8 @@ matches.  Fresh collections always update the cache."
     (`(sign vc add . ,_) "+")
     (`(sign vc change . ,_) "|")
     (`(sign vc delete . ,_) "-")
+    (`(sign highlight-changes change . ,_) "C")
+    (`(sign highlight-changes delete . ,_) "X")
     (`(sign _ _ scrollview-symbol-bitmap) "+")
     (`(sign _ _ scrollview-search-bitmap) "=")
     (`(sign _ _ scrollview-diagnostic-bitmap) "!")

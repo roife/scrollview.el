@@ -33,6 +33,8 @@
 
 (defvar bookmark-alist)
 (defvar eglot--highlights)
+(defvar highlight-changes-mode)
+(defvar highlight-changes-visible-mode)
 (defvar highlight-symbol)
 (defvar highlight-symbol-keyword-alist)
 (defvar hl-todo-keyword-faces)
@@ -54,6 +56,9 @@
 
 (defvar-local scrollview--highlight-symbol-state-generation 0
   "Buffer-local generation incremented after highlight-symbol updates.")
+
+(defvar-local scrollview--highlight-changes-state-generation 0
+  "Buffer-local generation incremented after Highlight Changes updates.")
 
 (defvar-local scrollview--symbol-overlay-state-generation 0
   "Buffer-local generation incremented after symbol-overlay updates.")
@@ -384,6 +389,54 @@ literally with `search-forward'."
 (defun scrollview--collect-highlight-symbol-lines (_window)
   "Collect lines highlighted by highlight-symbol."
   (scrollview--highlight-symbol-lines))
+
+(defun scrollview--highlight-changes-active-p ()
+  "Return non-nil when Highlight Changes signs should be visible."
+  (and (bound-and-true-p highlight-changes-mode)
+       (bound-and-true-p highlight-changes-visible-mode)))
+
+(defun scrollview--property-range-lines (start end)
+  "Return one-based lines touched by a text property from START to END."
+  (when (< start end)
+    (number-sequence (line-number-at-pos start t)
+                     (line-number-at-pos (1- end) t))))
+
+(defun scrollview--highlight-changes-property-lines (property)
+  "Return lines carrying Highlight Changes text PROPERTY."
+  (let ((pos (point-min))
+        (limit (point-max))
+        lines)
+    (while (< pos limit)
+      (let* ((value (get-text-property pos property))
+             (next (or (next-single-property-change
+                        pos property nil limit)
+                       limit)))
+        (when value
+          (setq lines
+                (nconc (scrollview--property-range-lines pos next)
+                       lines)))
+        (setq pos next)))
+    (scrollview--dedupe-sorted-lines lines)))
+
+(defun scrollview--highlight-changes-lines ()
+  "Return Highlight Changes lines grouped by variant."
+  (scrollview--cached-collector-value
+   'highlight-changes
+   (list :tick (buffer-chars-modified-tick)
+         :mode (bound-and-true-p highlight-changes-mode)
+         :visible (bound-and-true-p highlight-changes-visible-mode)
+         :generation scrollview--highlight-changes-state-generation)
+   (lambda ()
+     (when (scrollview--highlight-changes-active-p)
+       (list :change (scrollview--highlight-changes-property-lines
+                      'hilit-chg)
+             :delete (scrollview--highlight-changes-property-lines
+                      'hilit-chg-delete))))))
+
+(defun scrollview--collect-highlight-changes-lines (variant &rest _)
+  "Collect Highlight Changes sign lines for VARIANT."
+  (plist-get (scrollview--highlight-changes-lines)
+             (scrollview--variant-key variant)))
 
 (defun scrollview--overlay-line (overlay)
   "Return the one-based current-buffer line for OVERLAY."
@@ -784,12 +837,32 @@ literally with `search-forward'."
      :collector #'scrollview--collect-highlight-symbol-lines)
 
     (scrollview-register-sign-group
+     'highlight-changes (scrollview--startup-sign-enabled-p
+                         'highlight-changes))
+    (scrollview-register-sign-spec
+     :group 'highlight-changes
+     :variant 'change
+     :priority 32
+     :bitmap 'scrollview-highlight-changes-bitmap
+     :face 'scrollview-highlight-changes-face
+     :collector (apply-partially #'scrollview--collect-highlight-changes-lines
+                                 'change))
+    (scrollview-register-sign-spec
+     :group 'highlight-changes
+     :variant 'delete
+     :priority 32
+     :bitmap 'scrollview-highlight-changes-delete-bitmap
+     :face 'scrollview-highlight-changes-delete-face
+     :collector (apply-partially #'scrollview--collect-highlight-changes-lines
+                                 'delete))
+
+    (scrollview-register-sign-group
      'symbol-overlay (scrollview--startup-sign-enabled-p 'symbol-overlay))
     (scrollview-register-sign-spec
      :group 'symbol-overlay
      :variant 'match
      :priority 39
-     :bitmap 'scrollview-symbol-bitmap
+     :bitmap 'scrollview-search-bitmap
      :face 'scrollview-symbol-overlay-face
      :collector #'scrollview--collect-symbol-overlay-lines)
 
@@ -975,6 +1048,30 @@ literally with `search-forward'."
                      #'scrollview--after-highlight-symbol-update function)))
       (advice-add function :after
                   #'scrollview--after-highlight-symbol-update))))
+
+
+(defun scrollview--after-highlight-changes-update (&rest _)
+  "Refresh scrollview signs after Highlight Changes updates."
+  (cl-incf scrollview--highlight-changes-state-generation)
+  (when (and (bound-and-true-p scrollview-mode)
+             (scrollview-sign-group-active-p 'highlight-changes))
+    (scrollview--invalidate-buffer-sign-cache)
+    (scrollview--schedule-buffer-refresh)))
+
+(with-eval-after-load 'hilit-chg
+  (add-hook 'highlight-changes-mode-hook
+            #'scrollview--after-highlight-changes-update)
+  (add-hook 'highlight-changes-visible-mode-hook
+            #'scrollview--after-highlight-changes-update)
+  (dolist (function '(highlight-changes-remove-highlight
+                      highlight-changes-rotate-faces
+                      highlight-compare-with-file
+                      highlight-compare-buffers))
+    (when (and (fboundp function)
+               (not (advice-member-p
+                     #'scrollview--after-highlight-changes-update function)))
+      (advice-add function :after
+                  #'scrollview--after-highlight-changes-update))))
 
 
 (defun scrollview--after-symbol-overlay-update (&rest _)

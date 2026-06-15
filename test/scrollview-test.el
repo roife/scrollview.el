@@ -64,6 +64,7 @@
   (setq scrollview--eglot-highlight-state-generation 0)
   (setq scrollview--eglot-highlight-token nil)
   (setq scrollview--highlight-symbol-state-generation 0)
+  (setq scrollview--highlight-changes-state-generation 0)
   (setq scrollview--symbol-overlay-state-generation 0)
   (setq scrollview--diagnostic-state-generation 0)
   (setq scrollview--spell-state-generation 0)
@@ -339,28 +340,31 @@ When STRING is non-nil, include it as the clicked string object."
   (let ((scrollview-signs-on-startup '(search diagnostics)))
     (scrollview--initialize-builtins)
     (should (scrollview-sign-group-active-p 'diagnostics))
-    (dolist (group '(highlight-symbol symbol-overlay bookmarks eglot compilation
-                                      conflicts keywords spell vc))
+    (dolist (group '(highlight-symbol highlight-changes symbol-overlay
+                                      bookmarks eglot compilation conflicts
+                                      keywords spell vc))
       (should-not (scrollview-sign-group-active-p group)))))
 
 (ert-deftest scrollview-startup-all-symbol-enables-all-groups ()
   (scrollview-test--reset-state)
   (let ((scrollview-signs-on-startup 'all))
     (scrollview--initialize-builtins)
-    (dolist (group '(search highlight-symbol symbol-overlay bookmarks eglot
-                            diagnostics compilation conflicts keywords spell vc))
+    (dolist (group '(search highlight-symbol highlight-changes symbol-overlay
+                            bookmarks eglot diagnostics compilation conflicts
+                            keywords spell vc))
       (should (scrollview-sign-group-active-p group)))))
 
 (ert-deftest scrollview-builtins-register-new-sign-groups ()
   (scrollview-test--reset-state)
   (let ((scrollview-signs-on-startup nil))
     (scrollview--initialize-builtins)
-    (dolist (group '(highlight-symbol symbol-overlay bookmarks eglot compilation
-                                      conflicts keywords spell vc))
+    (dolist (group '(highlight-symbol highlight-changes symbol-overlay
+                                      bookmarks eglot compilation conflicts
+                                      keywords spell vc))
       (should (memq group (scrollview--sign-group-list))))
     (should-not (memq 'marks (scrollview--sign-group-list)))))
 
-(ert-deftest scrollview-symbol-and-eglot-bitmaps-are-distinct ()
+(ert-deftest scrollview-symbol-overlay-uses-search-bitmap ()
   (scrollview-test--reset-state)
   (let ((scrollview-signs-on-startup 'all)
         bitmaps)
@@ -375,11 +379,58 @@ When STRING is non-nil, include it as the clicked string object."
     (should (eq (alist-get 'highlight-symbol bitmaps)
                 'scrollview-symbol-bitmap))
     (should (eq (alist-get 'symbol-overlay bitmaps)
-                'scrollview-symbol-bitmap))
+                'scrollview-search-bitmap))
     (should (eq (alist-get 'eglot bitmaps)
                 'scrollview-search-bitmap))
     (should-not (eq (alist-get 'highlight-symbol bitmaps)
                     (alist-get 'eglot bitmaps)))))
+
+(ert-deftest scrollview-highlight-changes-uses-distinct-symbols ()
+  (scrollview-test--reset-state)
+  (let ((scrollview-signs-on-startup '(highlight-changes))
+        variants)
+    (scrollview--initialize-builtins)
+    (maphash
+     (lambda (_id spec)
+       (when (eq (scrollview--sign-spec-group spec) 'highlight-changes)
+         (push (cons (scrollview--sign-spec-variant spec)
+                     (scrollview--sign-spec-bitmap spec))
+               variants)))
+     scrollview--sign-specs)
+    (should (eq (alist-get 'change variants)
+                'scrollview-highlight-changes-bitmap))
+    (should (eq (alist-get 'delete variants)
+                'scrollview-highlight-changes-delete-bitmap))
+    (dolist (bitmap (mapcar #'cdr variants))
+      (should-not
+       (memq bitmap '(scrollview-search-bitmap
+                      scrollview-symbol-bitmap
+                      scrollview-diagnostic-bitmap
+                      scrollview-sign-dot-bitmap
+                      scrollview-sign-bar-bitmap
+                      scrollview-sign-delete-bitmap
+                      scrollview-spell-bitmap
+                      scrollview-keyword-todo-bitmap
+                      scrollview-keyword-fixme-bitmap
+                      scrollview-keyword-hack-bitmap
+                      scrollview-keyword-note-bitmap
+                      scrollview-keyword-workaround-bitmap
+                      scrollview-keyword-trick-r-bitmap
+                      scrollview-keyword-defect-bitmap
+                      scrollview-keyword-issue-bitmap
+                      scrollview-keyword-bitmap))))
+    (should (string= (scrollview--margin-glyph
+                      (list :type 'sign
+                            :group 'highlight-changes
+                            :variant 'change
+                            :bitmap 'scrollview-highlight-changes-bitmap))
+                     "C"))
+    (should (string= (scrollview--margin-glyph
+                      (list :type 'sign
+                            :group 'highlight-changes
+                            :variant 'delete
+                            :bitmap 'scrollview-highlight-changes-delete-bitmap))
+                     "X"))))
 
 (ert-deftest scrollview-diagnostic-bitmap-is-dot ()
   (scrollview-test--reset-state)
@@ -1251,6 +1302,59 @@ When STRING is non-nil, include it as the clicked string object."
           (highlight-symbol nil))
       (cl-incf scrollview--highlight-symbol-state-generation)
       (should-not (scrollview--collect-highlight-symbol-lines nil)))))
+
+(ert-deftest scrollview-highlight-changes-collector-requires-visible-mode ()
+  (scrollview-test--reset-state)
+  (with-temp-buffer
+    (insert "one\ntwo\nthree\nfour\n")
+    (cl-labels ((line-start
+                 (line)
+                 (save-excursion
+                   (goto-char (point-min))
+                   (forward-line (1- line))
+                   (point))))
+      (put-text-property (line-start 2) (line-start 4)
+                         'hilit-chg 'hilit-chg)
+      (put-text-property (line-start 4) (1+ (line-start 4))
+                         'hilit-chg-delete 'hilit-chg-delete)
+      (setq-local highlight-changes-mode t)
+      (setq-local highlight-changes-visible-mode t)
+      (should (equal (scrollview--collect-highlight-changes-lines
+                      'change)
+                     '(2 3)))
+      (should (equal (scrollview--collect-highlight-changes-lines
+                      'delete)
+                     '(4)))
+      (setq-local highlight-changes-visible-mode nil)
+      (should-not (scrollview--collect-highlight-changes-lines
+                   'change))
+      (should-not (scrollview--collect-highlight-changes-lines
+                   'delete))
+      (setq-local highlight-changes-mode nil)
+      (setq-local highlight-changes-visible-mode t)
+      (should-not (scrollview--collect-highlight-changes-lines
+                   'change))
+      (should-not (scrollview--collect-highlight-changes-lines
+                   'delete)))))
+
+(ert-deftest scrollview-highlight-changes-update-refreshes-active-group ()
+  (scrollview-test--reset-state)
+  (with-temp-buffer
+    (let ((scrollview-signs-on-startup '(highlight-changes))
+          (invalidated nil)
+          (scheduled nil))
+      (scrollview--initialize-builtins)
+      (setq scrollview-mode t)
+      (cl-letf (((symbol-function 'scrollview--invalidate-buffer-sign-cache)
+                 (lambda (&optional _buffer)
+                   (setq invalidated t)))
+                ((symbol-function 'scrollview--schedule-buffer-refresh)
+                 (lambda (&optional _buffer)
+                   (setq scheduled t))))
+        (scrollview--after-highlight-changes-update)
+        (should (= scrollview--highlight-changes-state-generation 1))
+        (should invalidated)
+        (should scheduled)))))
 
 (ert-deftest scrollview-symbol-overlay-collector-uses-overlays ()
   (scrollview-test--reset-state)

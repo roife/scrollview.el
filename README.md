@@ -82,7 +82,8 @@ Restricted mode keeps the scrollbar and skips sign collection.
 | --- | --- | --- | --- | --- |
 | `search` | Active isearch, or retained lazy-highlight overlays after isearch exits | `match` | `=` | `=` |
 | `highlight-symbol` | `highlight-symbol` highlighted regexps, when `highlight-symbol` is loaded | `match` | `+` | `+` |
-| `symbol-overlay` | `symbol-overlay` overlays, when `symbol-overlay` is loaded | `match` | `+` | `+` |
+| `highlight-changes` | `highlight-changes-mode` changes, only while `highlight-changes-visible-mode` is enabled | `change`, `delete` | `change` `C`, `delete` `X` | `change` `C`, `delete` `X` |
+| `symbol-overlay` | `symbol-overlay` overlays, when `symbol-overlay` is loaded | `match` | `=` | `=` |
 | `bookmarks` | File bookmarks from `bookmark-alist` | `bookmark` | `*` | `*` |
 | `eglot` | Existing Eglot document-highlight overlays | `highlight` | `=` | `=` |
 | `diagnostics` | Flymake diagnostics and Flycheck errors when Flycheck is loaded | `error`, `warning`, `info` | `o` | `!` |

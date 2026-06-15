@@ -55,6 +55,16 @@ scrollview is loaded and after themes are enabled."
   "Face for Eglot highlight signs."
   :group 'scrollview)
 
+(defface scrollview-highlight-changes-face
+  '((t (:inherit highlight-changes)))
+  "Face for Highlight Changes change signs."
+  :group 'scrollview)
+
+(defface scrollview-highlight-changes-delete-face
+  '((t (:inherit highlight-changes-delete)))
+  "Face for Highlight Changes deletion signs."
+  :group 'scrollview)
+
 (defface scrollview-compilation-error-face
   '((t (:inherit (compilation-error error))))
   "Face for compilation error signs."
@@ -192,6 +202,12 @@ The foreground is synchronized from `diff-removed'."
 
 (define-fringe-bitmap 'scrollview-sign-delete-bitmap
   [0 0 0 126 126 0 0 0] nil nil 'center)
+
+(define-fringe-bitmap 'scrollview-highlight-changes-bitmap
+  [0 60 102 96 96 96 102 60] nil nil 'center)
+
+(define-fringe-bitmap 'scrollview-highlight-changes-delete-bitmap
+  [0 102 60 24 24 60 102 0] nil nil 'center)
 
 (defconst scrollview--spell-bitmap-vector
   [0 0 0 54 126 108 0 0]
