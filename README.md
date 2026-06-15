@@ -26,6 +26,7 @@ For one buffer only:
 
 ```elisp
 (setq scrollview-area 'fringe
+      scrollview-fallback-to-margin t
       scrollview-side 'right
       scrollview-visibility 'always
       scrollview-signs-on-startup 'all)
@@ -60,6 +61,7 @@ Common alternatives:
 | Option | Default | Meaning |
 | --- | --- | --- |
 | `scrollview-area` | `fringe` | Display area.  Use `fringe` for bitmap indicators or `margin` for terminal-friendly text indicators. |
+| `scrollview-fallback-to-margin` | `t` | Use margin indicators instead of fringe indicators on non-graphic displays. |
 | `scrollview-side` | `right` | Display side.  Use `right` or `left`. |
 | `scrollview-visibility` | `always` | `always`, `overflow`, or `info`.  `info` shows indicators when the buffer overflows or signs exist. |
 | `scrollview-current-window-only` | `nil` | Show only in the selected window. |

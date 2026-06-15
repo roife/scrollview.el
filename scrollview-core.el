@@ -23,6 +23,9 @@
 (defvar-local scrollview-margin--saved-area nil
   "Saved `scrollview-area' state before `scrollview-margin-local-mode'.")
 
+(defvar-local scrollview--margin-width-state nil
+  "Saved margin width state before scrollview changed it.")
+
 ;;; Internal state
 
 (cl-defstruct (scrollview--sign-spec
@@ -200,7 +203,10 @@ overlays."
 
 (defun scrollview--margin-area-p ()
   "Return non-nil when scrollview renders in the window margin."
-  (eq scrollview-area 'margin))
+  (or (eq scrollview-area 'margin)
+      (and scrollview-fallback-to-margin
+           (eq scrollview-area 'fringe)
+           (not (display-graphic-p)))))
 
 (defun scrollview--display-area-available-p (window)
   "Return non-nil if WINDOW can display the configured scrollview area."
@@ -208,36 +214,59 @@ overlays."
       t
     (scrollview--fringe-available-p window)))
 
-(defun scrollview--current-window-margins (window)
-  "Return WINDOW margins as a cons cell."
-  (let ((margins (window-margins window)))
-    (cons (car margins) (cdr margins))))
+(defun scrollview--margin-width-variable ()
+  "Return the margin width variable for `scrollview-side'."
+  (if (eq scrollview-side 'left) 'left-margin-width 'right-margin-width))
 
 (defun scrollview--ensure-window-margins (window)
   "Ensure WINDOW has enough margin space for scrollview."
   (when (and (window-live-p window)
              (scrollview--margin-area-p))
-    (unless (gethash window scrollview--window-margins)
-      (puthash window (scrollview--current-window-margins window)
-               scrollview--window-margins))
-    (let* ((saved (gethash window scrollview--window-margins))
-           (saved-left (car saved))
-           (saved-right (cdr saved))
-           (left-width saved-left)
-           (right-width saved-right))
-      (pcase scrollview-side
-        ('left
-         (setq left-width (max (or saved-left 0) 1)))
-        (_
-         (setq right-width (max (or saved-right 0) 1))))
-      (set-window-margins window left-width right-width))))
+    (with-current-buffer (window-buffer window)
+      (let ((width-var (scrollview--margin-width-variable)))
+        (when (zerop (or (symbol-value width-var) 0))
+          (unless (assq width-var scrollview--margin-width-state)
+            (setq-local
+             scrollview--margin-width-state
+             (cons (list width-var
+                         (local-variable-p width-var)
+                         (symbol-value width-var))
+                   scrollview--margin-width-state)))
+          (set (make-local-variable width-var) 1))
+        (dolist (buffer-window (get-buffer-window-list (current-buffer) nil t))
+          (set-window-buffer buffer-window (current-buffer)))))))
+
+(defun scrollview--buffer-has-window-overlays-p (buffer)
+  "Return non-nil if BUFFER still has rendered scrollview overlays."
+  (let (found)
+    (maphash (lambda (window overlays)
+               (when (and overlays
+                          (window-live-p window)
+                          (eq (window-buffer window) buffer))
+                 (setq found t)))
+             scrollview--window-overlays)
+    found))
 
 (defun scrollview--restore-window-margins (window)
   "Restore WINDOW margins saved by scrollview."
   (when-let ((margins (gethash window scrollview--window-margins)))
     (when (window-live-p window)
       (set-window-margins window (car margins) (cdr margins)))
-    (remhash window scrollview--window-margins)))
+    (remhash window scrollview--window-margins))
+  (when (window-live-p window)
+    (with-current-buffer (window-buffer window)
+      (when (and scrollview--margin-width-state
+                 (or (not (scrollview--margin-area-p))
+                     (not (scrollview--buffer-has-window-overlays-p
+                           (current-buffer)))))
+        (dolist (entry scrollview--margin-width-state)
+          (pcase-let ((`(,width-var ,local-p ,value) entry))
+            (if local-p
+                (set (make-local-variable width-var) value)
+              (kill-local-variable width-var))))
+        (setq scrollview--margin-width-state nil)
+        (dolist (buffer-window (get-buffer-window-list (current-buffer) nil t))
+          (set-window-buffer buffer-window (current-buffer)))))))
 
 (defun scrollview--prepare-window-display-area (window)
   "Prepare WINDOW to display scrollview in the configured area."

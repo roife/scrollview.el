@@ -26,6 +26,13 @@ works in terminal frames."
                  (const :tag "Margin" margin))
   :group 'scrollview)
 
+(defcustom scrollview-fallback-to-margin t
+  "When non-nil, use margin indicators on non-graphic displays.
+This fallback applies when `scrollview-area' is `fringe', since terminal
+frames cannot display fringe indicators."
+  :type 'boolean
+  :group 'scrollview)
+
 (defcustom scrollview-side 'right
   "Side used by scrollview.
 The value must be either `right' or `left'."
