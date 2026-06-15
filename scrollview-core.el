@@ -99,6 +99,20 @@ When non-nil, a list (VAR LOCAL-P VALUE).")
 (defvar-local scrollview--line-count-cache nil
   "Buffer-local cache of the current line count.")
 
+(defvar-local scrollview--top-line-cache nil
+  "Buffer-local cache of (TICK START . LINE) for `scrollview--window-top-line'.
+TICK is `buffer-chars-modified-tick', START is a buffer position, and LINE is
+the one-based line number at START.  When the buffer is unmodified we can
+compute the line number for a different START by scanning only the delta
+between START values instead of rescanning from `point-min'.")
+
+(defvar scrollview--window-render-state (make-hash-table :test #'eq)
+  "Hash table mapping windows to the last rendered scroll signature.
+A signature is (BUFFER TICK WINDOW-START WINDOW-END LINE-HEIGHT
+SIGN-GENERATION).  When `scrollview--after-window-scroll' fires with a
+matching signature the previous overlays are still valid and we skip the
+rebuild.")
+
 (defvar scrollview-mode-map
   (let ((map (make-sparse-keymap)))
     (define-key map [left-fringe mouse-1] #'scrollview-click)
@@ -162,9 +176,49 @@ When non-nil, a list (VAR LOCAL-P VALUE).")
   (max 1 (truncate (window-body-height window))))
 
 (defun scrollview--window-top-line (window)
-  "Return the line number at WINDOW's start."
-  (with-current-buffer (window-buffer window)
-    (line-number-at-pos (window-start window) t)))
+  "Return the line number at WINDOW's start.
+Uses a buffer-local cache to avoid the O(N) newline scan from `point-min'
+that `line-number-at-pos' performs.  When the buffer is unmodified since the
+previous call we walk only the delta between the cached and current
+positions, which during scrolling is typically a handful of newlines."
+  (let ((raw-start (window-start window)))
+    (with-current-buffer (window-buffer window)
+      (let ((tick (buffer-chars-modified-tick))
+            (cache scrollview--top-line-cache)
+            ;; Normalize to the beginning of the line containing the
+            ;; window-start position so `count-lines' deltas are exact —
+            ;; this is the same normalization `line-number-at-pos' does.
+            (start (save-excursion
+                     (save-restriction
+                       (widen)
+                       (goto-char raw-start)
+                       (forward-line 0)
+                       (point)))))
+        (cond
+         ;; Same tick & same line-start: return cached value verbatim.
+         ((and cache
+               (= (car cache) tick)
+               (= (cadr cache) start))
+          (cddr cache))
+         ;; Same tick, different start: walk only the delta.
+         ((and cache (= (car cache) tick))
+          (let* ((cached-start (cadr cache))
+                 (cached-line (cddr cache))
+                 (line (save-excursion
+                         (save-restriction
+                           (widen)
+                           (if (>= start cached-start)
+                               (+ cached-line
+                                  (count-lines cached-start start))
+                             (max 1 (- cached-line
+                                       (count-lines start cached-start))))))))
+            (setq scrollview--top-line-cache (cons tick (cons start line)))
+            line))
+         ;; Buffer modified or no cache: full scan, then memoize.
+         (t
+          (let ((line (line-number-at-pos start t)))
+            (setq scrollview--top-line-cache (cons tick (cons start line)))
+            line)))))))
 
 (defun scrollview--window-track-lines (window top-line buffer-lines)
   "Return drawable display rows for WINDOW from TOP-LINE to BUFFER-LINES.
@@ -292,6 +346,7 @@ overlays."
   (when-let ((overlays (gethash window scrollview--window-overlays)))
     (mapc #'delete-overlay overlays)
     (remhash window scrollview--window-overlays))
+  (remhash window scrollview--window-render-state)
   (scrollview--restore-window-margins window))
 
 (defun scrollview--delete-buffer-overlays (&optional buffer)
@@ -310,7 +365,8 @@ overlays."
 (defun scrollview--invalidate-sign-cache ()
   "Invalidate cached sign items for all windows."
   (cl-incf scrollview--sign-cache-generation)
-  (clrhash scrollview--window-sign-cache))
+  (clrhash scrollview--window-sign-cache)
+  (clrhash scrollview--window-render-state))
 
 (defun scrollview--invalidate-buffer-sign-cache (&optional buffer)
   "Invalidate cached sign items for windows showing BUFFER."
@@ -784,6 +840,32 @@ Stale overlays are deleted while building the return value."
     ('info (or (plist-get info :overflow) sign-items))
     (_ (plist-get info :overflow))))
 
+(defun scrollview--render-signature (window)
+  "Return a signature describing WINDOW's current render-relevant state.
+Two equal signatures mean the previously rendered overlays are still
+correct."
+  (when (window-live-p window)
+    (let ((buffer (window-buffer window)))
+      (with-current-buffer buffer
+        (list buffer
+              (buffer-chars-modified-tick)
+              (window-start window)
+              (window-end window t)
+              (scrollview--window-line-height window)
+              scrollview--sign-cache-generation
+              ;; Per-buffer collector states that drive collector caches —
+              ;; if these tick we cannot reuse the prior render even when
+              ;; window-start is unchanged.
+              scrollview--spell-state-generation
+              scrollview--diagnostic-state-generation)))))
+
+(defun scrollview--invalidate-render-state (&optional window)
+  "Drop cached render signatures.
+With WINDOW non-nil, only forget that one window."
+  (if window
+      (remhash window scrollview--window-render-state)
+    (clrhash scrollview--window-render-state)))
+
 (defun scrollview--refresh-window (window)
   "Refresh scrollview overlays for WINDOW.
 Sign items come from the token-keyed cache, which self-invalidates when
@@ -822,24 +904,39 @@ the buffer changes."
                                         overlays)))))
                 (scrollview--delete-unused-overlays by-row spare)
                 (puthash window overlays scrollview--window-overlays)))
-          (scrollview--delete-window-overlays window)))
+          (scrollview--delete-window-overlays window))
+        ;; Stamp the render signature so the scroll fast-path can detect
+        ;; unchanged-state fires and skip the rebuild entirely.
+        (puthash window (scrollview--render-signature window)
+                 scrollview--window-render-state))
     (scrollview--delete-window-overlays window)))
 
-(defun scrollview--refresh-now (&optional window)
+(defun scrollview--refresh-now (&optional window scroll)
   "Refresh scrollview overlays now.
-When WINDOW is non-nil, refresh only that window."
+When WINDOW is non-nil, refresh only that window.  When SCROLL is non-nil
+this is a scroll-driven refresh, which skips the global setup work
+\(face sync, builtin registration, dead-window cleanup) that does not
+depend on scroll position and short-circuits when WINDOW's render
+signature is unchanged from the previous refresh."
   (unless scrollview--refreshing
     (let ((scrollview--refreshing t)
           (inhibit-redisplay t))
-      (scrollview--sync-faces)
-      (scrollview--initialize-builtins)
-      (scrollview--cleanup-dead-windows)
-      (if window
-          (scrollview--refresh-window window)
-        (dolist (window (scrollview--all-windows))
-          (if (scrollview--window-eligible-p window)
-              (scrollview--refresh-window window)
-            (scrollview--delete-window-overlays window)))))))
+      (cond
+       ((and scroll window)
+        (let ((signature (scrollview--render-signature window))
+              (previous (gethash window scrollview--window-render-state)))
+          (unless (and previous (equal signature previous))
+            (scrollview--refresh-window window))))
+       (t
+        (scrollview--sync-faces)
+        (scrollview--initialize-builtins)
+        (scrollview--cleanup-dead-windows)
+        (if window
+            (scrollview--refresh-window window)
+          (dolist (window (scrollview--all-windows))
+            (if (scrollview--window-eligible-p window)
+                (scrollview--refresh-window window)
+              (scrollview--delete-window-overlays window)))))))))
 
 ;;;###autoload
 (defun scrollview-refresh (&optional window)
@@ -883,8 +980,13 @@ eligible windows."
   "Refresh WINDOW immediately after it scrolls.
 Keeping this synchronous prevents stale scrollview overlays from riding along
 with the text for one redisplay frame before the debounced refresh corrects
-them."
-  (scrollview--refresh-now window))
+them.
+
+Performance: `window-scroll-functions' fires on every redisplay step during
+scrolling, so this delegates to `scrollview--refresh-now' with SCROLL
+non-nil, which skips the global setup work and short-circuits when nothing
+relevant has changed since the last refresh."
+  (scrollview--refresh-now window 'scroll))
 
 (defun scrollview--after-change (&rest _)
   "Refresh windows showing the current buffer after buffer changes."

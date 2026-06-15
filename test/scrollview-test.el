@@ -1178,10 +1178,10 @@ When STRING is non-nil, include it as the clicked string object."
   (let ((window (selected-window))
         called)
     (cl-letf (((symbol-function 'scrollview--refresh-now)
-               (lambda (&optional refreshed-window)
-                 (setq called (list refreshed-window)))))
+               (lambda (&optional refreshed-window scroll)
+                 (setq called (list refreshed-window scroll)))))
       (scrollview--after-window-scroll window nil))
-    (should (equal called (list window)))
+    (should (equal called (list window 'scroll)))
     (should-not (timerp scrollview--refresh-timer))))
 
 (ert-deftest scrollview-scroll-refresh-reuses-sign-cache ()
