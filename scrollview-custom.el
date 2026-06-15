@@ -85,22 +85,6 @@ Use `all' to enable all built-in groups."
   :type 'number
   :group 'scrollview)
 
-(defcustom scrollview-scrollbar-priority 0
-  "Priority of the scrollbar when it conflicts with signs.
-Higher priority signs replace the scrollbar for that display row."
-  :type 'integer
-  :group 'scrollview)
-
-(defcustom scrollview-overlay-priority 1000
-  "Overlay priority used for rendered scrollview indicators."
-  :type 'integer
-  :group 'scrollview)
-
-(defcustom scrollview-wrap-navigation t
-  "When non-nil, sign navigation wraps around buffer ends."
-  :type 'boolean
-  :group 'scrollview)
-
 
 
 (provide 'scrollview-custom)

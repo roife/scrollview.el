@@ -25,11 +25,6 @@ The face is synchronized with the current `region' background color when
 scrollview is loaded and after themes are enabled."
   :group 'scrollview)
 
-(defface scrollview-restricted-face
-  '((t (:inherit scrollview-thumb-face)))
-  "Face for the scrollbar when signs are disabled by restricted mode."
-  :group 'scrollview)
-
 (defface scrollview-search-face
   '((t (:inherit font-lock-function-name-face)))
   "Face for search signs."
@@ -246,18 +241,35 @@ The foreground is synchronized from `diff-removed'."
 (define-fringe-bitmap 'scrollview-keyword-bitmap
   [0 24 60 126 60 24 0 0] nil nil 'center)
 
-(defun scrollview--keyword-bitmap (variant)
-  "Return a fringe bitmap symbol for keyword VARIANT."
-  (pcase variant
-    ('todo 'scrollview-keyword-todo-bitmap)
-    ('fixme 'scrollview-keyword-fixme-bitmap)
-    ('hack 'scrollview-keyword-hack-bitmap)
-    ('note 'scrollview-keyword-note-bitmap)
-    ('workaround 'scrollview-keyword-workaround-bitmap)
-    ('trick-r 'scrollview-keyword-trick-r-bitmap)
-    ('defect 'scrollview-keyword-defect-bitmap)
-    ('issue 'scrollview-keyword-issue-bitmap)
-    (_ 'scrollview-keyword-bitmap)))
+(defconst scrollview--keyword-metadata
+  '((todo       :priority 30 :bitmap scrollview-keyword-todo-bitmap
+                :face scrollview-keyword-todo-face)
+    (fixme      :priority 20 :bitmap scrollview-keyword-fixme-bitmap
+                :face scrollview-keyword-fixme-face)
+    (hack       :priority 20 :bitmap scrollview-keyword-hack-bitmap
+                :face scrollview-keyword-hack-face)
+    (note       :priority 15 :bitmap scrollview-keyword-note-bitmap
+                :face scrollview-keyword-note-face)
+    (workaround :priority 20 :bitmap scrollview-keyword-workaround-bitmap
+                :face scrollview-keyword-workaround-face)
+    (trick-r    :priority 20 :bitmap scrollview-keyword-trick-r-bitmap
+                :face scrollview-keyword-trick-r-face)
+    (defect     :priority 20 :bitmap scrollview-keyword-defect-bitmap
+                :face scrollview-keyword-defect-face)
+    (issue      :priority 25 :bitmap scrollview-keyword-issue-bitmap
+                :face scrollview-keyword-issue-face))
+  "Metadata for built-in keyword sign variants.
+Each entry is (VARIANT :priority N :bitmap SYMBOL :face FACE).  Variants
+not listed here use `scrollview-keyword-bitmap', `scrollview-keyword-face',
+and priority 10.")
+
+(defun scrollview--keyword-attr (variant attr)
+  "Return ATTR for keyword VARIANT, falling back to a default."
+  (or (plist-get (cdr (assq variant scrollview--keyword-metadata)) attr)
+      (pcase attr
+        (:priority 10)
+        (:bitmap 'scrollview-keyword-bitmap)
+        (:face 'scrollview-keyword-face))))
 
 (defvar scrollview--sign-render-face-cache (make-hash-table :test #'equal)
   "Hash table mapping source sign faces to cached render face data.")

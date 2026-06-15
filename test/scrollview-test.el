@@ -8,7 +8,6 @@
 
 (defvar eglot--highlights nil)
 (defvar flycheck-current-errors nil)
-(defvar highlight-symbol nil)
 (defvar highlight-symbol-keyword-alist nil)
 (defvar hl-todo-keyword-faces nil)
 
@@ -17,14 +16,7 @@
   (maphash (lambda (_window overlays)
              (mapc #'delete-overlay overlays))
            scrollview--window-overlays)
-  (let (windows)
-    (maphash (lambda (window _margins)
-               (push window windows))
-             scrollview--window-margins)
-    (dolist (window windows)
-      (scrollview--restore-window-margins window)))
   (setq scrollview--window-overlays (make-hash-table :test #'eq))
-  (setq scrollview--window-margins (make-hash-table :test #'eq))
   (setq scrollview--pending-windows (make-hash-table :test #'eq))
   (setq scrollview--pending-all nil)
   (when (timerp scrollview--refresh-timer)
@@ -550,8 +542,8 @@ When STRING is non-nil, include it as the clicked string object."
                    (issue scrollview-keyword-issue-face 25)
                    (custom scrollview-keyword-face 10)))
     (pcase-let ((`(,variant ,face ,priority) entry))
-      (should (eq (scrollview--keyword-face variant) face))
-      (should (= (scrollview--keyword-priority variant) priority)))))
+      (should (eq (scrollview--keyword-attr variant :face) face))
+      (should (= (scrollview--keyword-attr variant :priority) priority)))))
 
 (ert-deftest scrollview-keyword-scan-propertizes-before-hl-todo-search ()
   (scrollview-test--reset-state)
@@ -665,10 +657,7 @@ When STRING is non-nil, include it as the clicked string object."
                       'warning))
           (should (eq (scrollview--diagnostic-level
                        'scrollview-test-eglot-note)
-                      'info))
-          (should (eq (scrollview--diagnostic-level 1) 'error))
-          (should (eq (scrollview--diagnostic-level 2) 'warning))
-          (should (eq (scrollview--diagnostic-level 3) 'info)))
+                      'info)))
       (dolist (symbol symbols)
         (cl-remf (symbol-plist symbol) 'flymake-category)))))
 
@@ -789,14 +778,14 @@ When STRING is non-nil, include it as the clicked string object."
                       :id 1 :group 'test :variant nil :priority 10
                       :bitmap 'scrollview-search-bitmap
                       :face 'scrollview-search-face
-                      :collector #'ignore :current-only nil))
+                      :collector #'ignore))
                (low (scrollview--make-sign-spec
                      :id 2 :group 'test :variant nil :priority -1
                      :bitmap 'scrollview-sign-dot-bitmap
                      :face 'scrollview-keyword-face
-                     :collector #'ignore :current-only nil))
+                     :collector #'ignore))
                (info '(:window-lines 5 :buffer-lines 5
-                       :thumb-top 0 :thumb-size 5 :restricted nil))
+                       :thumb-top 0 :thumb-size 5))
                slots)
           (set-face-attribute 'scrollview-thumb-face nil
                               :inherit nil
@@ -825,9 +814,9 @@ When STRING is non-nil, include it as the clicked string object."
                 :id 1 :group 'test :variant nil :priority 10
                 :bitmap 'scrollview-search-bitmap
                 :face 'scrollview-search-face
-                :collector #'ignore :current-only nil))
+                :collector #'ignore))
          (info '(:window-lines 5 :buffer-lines 5
-                 :thumb-top 0 :thumb-size 1 :restricted nil))
+                 :thumb-top 0 :thumb-size 1))
          (slots (scrollview--build-slots
                  nil info
                  (list (list :line 5 :spec spec)))))
@@ -839,7 +828,7 @@ When STRING is non-nil, include it as the clicked string object."
 
 (ert-deftest scrollview-slots-avoid-eob-empty-display-rows ()
   (let* ((info '(:window-lines 10 :track-lines 4 :buffer-lines 100
-                 :thumb-top 3 :thumb-size 1 :restricted nil))
+                 :thumb-top 3 :thumb-size 1))
          (slots (scrollview--build-slots nil info nil)))
     (should (eq (plist-get (aref slots 3) :type) 'scrollbar))
     (cl-loop for row from 4 below (length slots)
@@ -1189,10 +1178,10 @@ When STRING is non-nil, include it as the clicked string object."
   (let ((window (selected-window))
         called)
     (cl-letf (((symbol-function 'scrollview--refresh-now)
-               (lambda (&optional refreshed-window reuse-signs)
-                 (setq called (list refreshed-window reuse-signs)))))
+               (lambda (&optional refreshed-window)
+                 (setq called (list refreshed-window)))))
       (scrollview--after-window-scroll window nil))
-    (should (equal called (list window t)))
+    (should (equal called (list window)))
     (should-not (timerp scrollview--refresh-timer))))
 
 (ert-deftest scrollview-scroll-refresh-reuses-sign-cache ()
@@ -1222,6 +1211,9 @@ When STRING is non-nil, include it as the clicked string object."
         (should (= calls 1))
         (scrollview--after-window-scroll (selected-window) nil)
         (should (= calls 1))
+        (scrollview-refresh (selected-window))
+        (should (= calls 1))
+        (scrollview--invalidate-sign-cache)
         (scrollview-refresh (selected-window))
         (should (= calls 2))))))
 
@@ -1350,12 +1342,11 @@ When STRING is non-nil, include it as the clicked string object."
   (with-temp-buffer
     (insert "alpha\nbeta alpha\ngamma beta\n")
     (let ((highlight-symbol-keyword-alist
-           '(("\\_<alpha\\_>" 0 highlight prepend)))
-          (highlight-symbol "\\_<beta\\_>"))
+           '(("\\_<alpha\\_>" 0 highlight prepend)
+             ("\\_<beta\\_>" 0 highlight prepend))))
       (should (equal (scrollview--collect-highlight-symbol-lines nil)
                      '(1 2 3))))
-    (let ((highlight-symbol-keyword-alist nil)
-          (highlight-symbol nil))
+    (let ((highlight-symbol-keyword-alist nil))
       (cl-incf scrollview--highlight-symbol-state-generation)
       (should-not (scrollview--collect-highlight-symbol-lines nil)))))
 
@@ -1421,7 +1412,12 @@ When STRING is non-nil, include it as the clicked string object."
           (second (make-overlay (line-beginning-position 3)
                                 (line-end-position 3))))
       (unwind-protect
-          (progn
+          (cl-letf (((symbol-function 'symbol-overlay-get-list)
+                     (lambda (&optional _index _symbol)
+                       (seq-filter (lambda (overlay)
+                                     (overlay-get overlay 'symbol))
+                                   (overlays-in (point-min)
+                                                (point-max))))))
             (overlay-put first 'symbol "alpha")
             (overlay-put second 'symbol "alpha")
             (should (equal (scrollview--collect-symbol-overlay-lines nil)

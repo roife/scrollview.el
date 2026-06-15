@@ -20,23 +20,27 @@
 (defvar-local scrollview-mode nil
   "Non-nil when `scrollview-mode' is enabled.")
 
+(defconst scrollview--scrollbar-priority 0
+  "Priority of the scrollbar when it conflicts with signs.")
+
+(defconst scrollview--overlay-priority 1000
+  "Overlay priority used for rendered scrollview indicators.")
+
 (defvar-local scrollview-margin--saved-area nil
   "Saved `scrollview-area' state before `scrollview-margin-local-mode'.")
 
 (defvar-local scrollview--margin-width-state nil
-  "Saved margin width state before scrollview changed it.")
+  "Saved margin width state before scrollview changed it.
+When non-nil, a list (VAR LOCAL-P VALUE).")
 
 ;;; Internal state
 
 (cl-defstruct (scrollview--sign-spec
                (:constructor scrollview--make-sign-spec))
-  id group variant priority bitmap face collector current-only)
+  id group variant priority bitmap face collector)
 
 (defvar scrollview--window-overlays (make-hash-table :test #'eq)
   "Hash table mapping windows to their scrollview overlays.")
-
-(defvar scrollview--window-margins (make-hash-table :test #'eq)
-  "Hash table mapping windows to margins saved before scrollview changed them.")
 
 (defvar scrollview--pending-windows (make-hash-table :test #'eq)
   "Hash table of windows queued for refresh.")
@@ -95,16 +99,6 @@
 (defvar-local scrollview--line-count-cache nil
   "Buffer-local cache of the current line count.")
 
-(defvar scrollview--mouse-map
-  (let ((map (make-sparse-keymap)))
-    (define-key map [mouse-1] #'scrollview-click)
-    (define-key map [left-fringe mouse-1] #'scrollview-click)
-    (define-key map [right-fringe mouse-1] #'scrollview-click)
-    (define-key map [left-margin mouse-1] #'scrollview-click)
-    (define-key map [right-margin mouse-1] #'scrollview-click)
-    map)
-  "Keymap used on scrollview display strings.")
-
 (defvar scrollview-mode-map
   (let ((map (make-sparse-keymap)))
     (define-key map [left-fringe mouse-1] #'scrollview-click)
@@ -116,13 +110,6 @@
 
 
 ;;; Utilities
-
-(defun scrollview--normalize-group (group)
-  "Return GROUP as a symbol."
-  (cond
-   ((symbolp group) group)
-   ((stringp group) (intern group))
-   (t (user-error "Invalid scrollview sign group: %S" group))))
 
 (defun scrollview--all-windows ()
   "Return all non-minibuffer live windows on all frames."
@@ -225,13 +212,11 @@ overlays."
     (with-current-buffer (window-buffer window)
       (let ((width-var (scrollview--margin-width-variable)))
         (when (zerop (or (symbol-value width-var) 0))
-          (unless (assq width-var scrollview--margin-width-state)
-            (setq-local
-             scrollview--margin-width-state
-             (cons (list width-var
-                         (local-variable-p width-var)
-                         (symbol-value width-var))
-                   scrollview--margin-width-state)))
+          (unless scrollview--margin-width-state
+            (setq-local scrollview--margin-width-state
+                        (list width-var
+                              (local-variable-p width-var)
+                              (symbol-value width-var))))
           (set (make-local-variable width-var) 1))
         (dolist (buffer-window (get-buffer-window-list (current-buffer) nil t))
           (set-window-buffer buffer-window (current-buffer)))))))
@@ -249,21 +234,17 @@ overlays."
 
 (defun scrollview--restore-window-margins (window)
   "Restore WINDOW margins saved by scrollview."
-  (when-let ((margins (gethash window scrollview--window-margins)))
-    (when (window-live-p window)
-      (set-window-margins window (car margins) (cdr margins)))
-    (remhash window scrollview--window-margins))
   (when (window-live-p window)
     (with-current-buffer (window-buffer window)
       (when (and scrollview--margin-width-state
                  (or (not (scrollview--margin-area-p))
                      (not (scrollview--buffer-has-window-overlays-p
                            (current-buffer)))))
-        (dolist (entry scrollview--margin-width-state)
-          (pcase-let ((`(,width-var ,local-p ,value) entry))
-            (if local-p
-                (set (make-local-variable width-var) value)
-              (kill-local-variable width-var))))
+        (pcase-let ((`(,width-var ,local-p ,value)
+                     scrollview--margin-width-state))
+          (if local-p
+              (set (make-local-variable width-var) value)
+            (kill-local-variable width-var)))
         (setq scrollview--margin-width-state nil)
         (dolist (buffer-window (get-buffer-window-list (current-buffer) nil t))
           (set-window-buffer buffer-window (current-buffer)))))))
@@ -302,10 +283,6 @@ overlays."
                (unless (window-live-p window)
                  (cl-pushnew window dead :test #'eq)))
              scrollview--window-sign-cache)
-    (maphash (lambda (window _margins)
-               (unless (window-live-p window)
-                 (cl-pushnew window dead :test #'eq)))
-             scrollview--window-margins)
     (dolist (window dead)
       (scrollview--delete-window-overlays window)
       (remhash window scrollview--window-sign-cache))))
@@ -330,14 +307,10 @@ overlays."
       (scrollview--delete-window-overlays window))
     (scrollview--invalidate-buffer-sign-cache buffer)))
 
-(defun scrollview--invalidate-sign-cache (&optional window)
-  "Invalidate cached sign items.
-When WINDOW is non-nil, invalidate only that window.  Otherwise invalidate all
-cached sign items."
-  (if window
-      (remhash window scrollview--window-sign-cache)
-    (cl-incf scrollview--sign-cache-generation)
-    (clrhash scrollview--window-sign-cache)))
+(defun scrollview--invalidate-sign-cache ()
+  "Invalidate cached sign items for all windows."
+  (cl-incf scrollview--sign-cache-generation)
+  (clrhash scrollview--window-sign-cache))
 
 (defun scrollview--invalidate-buffer-sign-cache (&optional buffer)
   "Invalidate cached sign items for windows showing BUFFER."
@@ -428,8 +401,7 @@ BOTTOM-VISIBLE should be non-nil when point-max is visible."
             :bottom-visible bottom-visible
             :thumb-size thumb-size
             :thumb-top thumb-top
-            :overflow overflow
-            :restricted (scrollview--restricted-p)))))
+            :overflow overflow))))
 
 
 ;;; Sign registration API
@@ -438,10 +410,9 @@ BOTTOM-VISIBLE should be non-nil when point-max is visible."
 (defun scrollview-register-sign-group (group &optional enabled)
   "Register sign GROUP.
 When ENABLED is non-nil, enable the group immediately."
-  (let ((group (scrollview--normalize-group group)))
-    (puthash group (and enabled t) scrollview--sign-groups)
-    (scrollview--invalidate-sign-cache)
-    group))
+  (puthash group (and enabled t) scrollview--sign-groups)
+  (scrollview--invalidate-sign-cache)
+  group)
 
 ;;;###autoload
 (defun scrollview-register-sign-spec (&rest args)
@@ -455,9 +426,8 @@ ARGS is a plist accepting:
                         `scrollview-sign-dot-bitmap'.  Margin rendering maps
                         the bitmap and variant to a text indicator.
   :face FACE            Face used for the indicator.
-  :collector FUNCTION   Called with a window and returns line numbers.
-  :current-only BOOL    When non-nil, show only in the selected window."
-  (let* ((group (scrollview--normalize-group (plist-get args :group)))
+  :collector FUNCTION   Called with a window and returns line numbers."
+  (let* ((group (plist-get args :group))
          (collector (plist-get args :collector)))
     (unless (gethash group scrollview--sign-groups)
       (unless (memq group (scrollview--sign-group-list))
@@ -475,8 +445,7 @@ ARGS is a plist accepting:
                               'scrollview-sign-dot-bitmap)
                   :face (or (plist-get args :face)
                             'scrollview-keyword-face)
-                  :collector collector
-                  :current-only (and (plist-get args :current-only) t))))
+                  :collector collector)))
       (puthash id spec scrollview--sign-specs)
       (scrollview--invalidate-sign-cache)
       id)))
@@ -507,8 +476,7 @@ ARGS is a plist accepting:
 (defun scrollview-set-sign-group-state (group state)
   "Set sign GROUP state to STATE.
 STATE should be non-nil to enable, nil to disable, or `:toggle' to toggle."
-  (let* ((group (scrollview--normalize-group group))
-         (old (gethash group scrollview--sign-groups :missing))
+  (let* ((old (gethash group scrollview--sign-groups :missing))
          (new (and (if (eq state :toggle) (not old) state) t)))
     (when (eq old :missing)
       (user-error "Unknown scrollview sign group: %s" group))
@@ -520,8 +488,7 @@ STATE should be non-nil to enable, nil to disable, or `:toggle' to toggle."
 ;;;###autoload
 (defun scrollview-sign-group-active-p (group)
   "Return non-nil if sign GROUP is enabled."
-  (and (gethash (scrollview--normalize-group group) scrollview--sign-groups)
-       t))
+  (and (gethash group scrollview--sign-groups) t))
 
 (defun scrollview--read-sign-group (&optional include-all)
   "Read a sign group, optionally allowing `all'."
@@ -529,33 +496,32 @@ STATE should be non-nil to enable, nil to disable, or `:toggle' to toggle."
          (choices (if include-all (cons "all" groups) groups)))
     (intern (completing-read "Scrollview sign group: " choices nil t))))
 
-(defun scrollview--map-sign-groups (group function)
-  "Apply FUNCTION to GROUP, expanding `all'."
-  (if (eq group 'all)
-      (dolist (group (scrollview--sign-group-list))
-        (funcall function group))
-    (funcall function group)))
-
 ;;;###autoload
 (defun scrollview-enable-sign-group (group)
   "Enable scrollview sign GROUP."
   (interactive (list (scrollview--read-sign-group t)))
-  (scrollview--map-sign-groups
-   group (lambda (group) (scrollview-set-sign-group-state group t))))
+  (if (eq group 'all)
+      (dolist (g (scrollview--sign-group-list))
+        (scrollview-set-sign-group-state g t))
+    (scrollview-set-sign-group-state group t)))
 
 ;;;###autoload
 (defun scrollview-disable-sign-group (group)
   "Disable scrollview sign GROUP."
   (interactive (list (scrollview--read-sign-group t)))
-  (scrollview--map-sign-groups
-   group (lambda (group) (scrollview-set-sign-group-state group nil))))
+  (if (eq group 'all)
+      (dolist (g (scrollview--sign-group-list))
+        (scrollview-set-sign-group-state g nil))
+    (scrollview-set-sign-group-state group nil)))
 
 ;;;###autoload
 (defun scrollview-toggle-sign-group (group)
   "Toggle scrollview sign GROUP."
   (interactive (list (scrollview--read-sign-group t)))
-  (scrollview--map-sign-groups
-   group (lambda (group) (scrollview-set-sign-group-state group :toggle))))
+  (if (eq group 'all)
+      (dolist (g (scrollview--sign-group-list))
+        (scrollview-set-sign-group-state g :toggle))
+    (scrollview-set-sign-group-state group :toggle)))
 
 
 ;;; Sign collection and rendering
@@ -576,10 +542,9 @@ STATE should be non-nil to enable, nil to disable, or `:toggle' to toggle."
 GROUPS may be nil, a symbol, or a list of symbols."
   (let* ((groups (cond
                   ((null groups) nil)
-                  ((listp groups) (mapcar #'scrollview--normalize-group groups))
-                  (t (list (scrollview--normalize-group groups)))))
+                  ((listp groups) groups)
+                  (t (list groups))))
          (buffer (window-buffer window))
-         (selected (selected-window))
          buffer-lines
          items)
     (with-current-buffer buffer
@@ -591,12 +556,10 @@ GROUPS may be nil, a symbol, or a list of symbols."
              (when (and (scrollview-sign-group-active-p group)
                         (or (null groups)
                             (memq 'all groups)
-                            (memq group groups))
-                        (or (not (scrollview--sign-spec-current-only spec))
-                            (eq window selected)))
-               (dolist (line (ignore-errors
-                                (funcall (scrollview--sign-spec-collector spec)
-                                         window)))
+                            (memq group groups)))
+               (dolist (line (funcall
+                              (scrollview--sign-spec-collector spec)
+                              window))
                  (when-let ((line (scrollview--normalize-line
                                    line buffer-lines)))
                    (push (list :line line :spec spec) items))))))
@@ -614,13 +577,10 @@ GROUPS may be nil, a symbol, or a list of symbols."
             :spell (when (scrollview-sign-group-active-p 'spell)
                      scrollview--spell-state-generation)))))
 
-(defun scrollview--collect-sign-items-cached (window reuse-cache)
-  "Collect sign items for WINDOW.
-When REUSE-CACHE is non-nil, return cached items if the cache token still
-matches.  Fresh collections always update the cache."
+(defun scrollview--collect-sign-items-cached (window)
+  "Collect sign items for WINDOW, using the token-keyed cache."
   (let* ((token (scrollview--sign-cache-token window))
-         (entry (and reuse-cache
-                     (gethash window scrollview--window-sign-cache))))
+         (entry (gethash window scrollview--window-sign-cache)))
     (if (and entry (equal token (plist-get entry :token)))
         (plist-get entry :items)
       (let ((items (scrollview--collect-sign-items window)))
@@ -628,25 +588,12 @@ matches.  Fresh collections always update the cache."
                  scrollview--window-sign-cache)
         items))))
 
-(defun scrollview--slot-better-p (new old)
-  "Return non-nil if NEW slot should replace OLD slot."
-  (or (null old)
-      (> (plist-get new :priority) (plist-get old :priority))
-      (and (= (plist-get new :priority) (plist-get old :priority))
-           (< (plist-get new :order) (plist-get old :order)))))
-
-(defun scrollview--slot-params-better-p (priority order old)
+(defun scrollview--slot-better-p (priority order old)
   "Return non-nil if PRIORITY and ORDER should replace OLD."
   (or (null old)
       (> priority (plist-get old :priority))
       (and (= priority (plist-get old :priority))
            (< order (plist-get old :order)))))
-
-(defun scrollview--put-slot (slots row slot)
-  "Put SLOT into SLOTS at ROW if it has higher priority."
-  (let ((old (aref slots row)))
-    (when (scrollview--slot-better-p slot old)
-      (aset slots row slot))))
 
 (defun scrollview--build-slots (_window info sign-items)
   "Return display slots using INFO and SIGN-ITEMS."
@@ -655,21 +602,17 @@ matches.  Fresh collections always update the cache."
          (buffer-lines (plist-get info :buffer-lines))
          (thumb-top (plist-get info :thumb-top))
          (thumb-size (plist-get info :thumb-size))
-         (restricted (plist-get info :restricted))
          (slots (make-vector window-lines nil)))
     (dotimes (offset thumb-size)
       (let ((row (+ thumb-top offset)))
         (when (< row window-lines)
-          (scrollview--put-slot
-           slots row
-           (list :type 'scrollbar
-                 :priority scrollview-scrollbar-priority
-                 :order most-positive-fixnum
-                 :bitmap 'filled-rectangle
-                 :face (if restricted
-                           'scrollview-restricted-face
-                         'scrollview-thumb-face)
-                 :help-echo "scrollview scrollbar")))))
+          (aset slots row
+                (list :type 'scrollbar
+                      :priority scrollview--scrollbar-priority
+                      :order most-positive-fixnum
+                      :bitmap 'filled-rectangle
+                      :face 'scrollview-thumb-face
+                      :help-echo "scrollview scrollbar")))))
     (dolist (item sign-items)
       (let* ((line (plist-get item :line))
              (spec (plist-get item :spec))
@@ -677,7 +620,7 @@ matches.  Fresh collections always update the cache."
              (priority (scrollview--sign-spec-priority spec))
              (order (scrollview--sign-spec-id spec))
              (old (aref slots row)))
-        (when (scrollview--slot-params-better-p priority order old)
+        (when (scrollview--slot-better-p priority order old)
           (let ((highlighted (and (<= thumb-top row)
                                   (< row (+ thumb-top thumb-size)))))
             (aset slots row
@@ -747,7 +690,6 @@ matches.  Fresh collections always update the cache."
   "Return STRING carrying scrollview display properties."
   (apply #'propertize string
          'face face
-         'keymap scrollview--mouse-map
          'mouse-face 'highlight
          'scrollview-target-line target-line
          'scrollview-target-type target-type
@@ -763,7 +705,7 @@ matches.  Fresh collections always update the cache."
         :target-line target-line
         :target-type (plist-get slot :type)
         :help-echo (plist-get slot :help-echo)
-        :priority scrollview-overlay-priority))
+        :priority scrollview--overlay-priority))
 
 (defun scrollview--overlay-after-string (slot target-line)
   "Return the after-string for SLOT and TARGET-LINE."
@@ -793,9 +735,8 @@ matches.  Fresh collections always update the cache."
       (overlay-put overlay 'after-string
                    (scrollview--overlay-after-string slot target-line))
       (overlay-put overlay 'window window)
-      (overlay-put overlay 'priority scrollview-overlay-priority)
+      (overlay-put overlay 'priority scrollview--overlay-priority)
       (overlay-put overlay 'scrollview t)
-      (overlay-put overlay 'keymap scrollview--mouse-map)
       (overlay-put overlay 'scrollview-target-line target-line)
       (overlay-put overlay 'scrollview-target-type (plist-get slot :type))
       (overlay-put overlay 'help-echo (plist-get slot :help-echo))
@@ -843,14 +784,13 @@ Stale overlays are deleted while building the return value."
     ('info (or (plist-get info :overflow) sign-items))
     (_ (plist-get info :overflow))))
 
-(defun scrollview--refresh-window (window &optional reuse-signs)
+(defun scrollview--refresh-window (window)
   "Refresh scrollview overlays for WINDOW.
-When REUSE-SIGNS is non-nil, reuse cached sign items when they are still
-valid."
+Sign items come from the token-keyed cache, which self-invalidates when
+the buffer changes."
   (if (scrollview--window-eligible-p window)
       (let* ((info (scrollview--position-info window))
-             (sign-items (scrollview--collect-sign-items-cached
-                          window reuse-signs)))
+             (sign-items (scrollview--collect-sign-items-cached window)))
         (if (scrollview--should-render-p info sign-items)
             (let ((slots (scrollview--build-slots window info sign-items))
                   overlays)
@@ -885,23 +825,20 @@ valid."
           (scrollview--delete-window-overlays window)))
     (scrollview--delete-window-overlays window)))
 
-(defun scrollview--refresh-now (&optional window reuse-signs)
+(defun scrollview--refresh-now (&optional window)
   "Refresh scrollview overlays now.
-When WINDOW is non-nil, refresh only that window.  REUSE-SIGNS has the same
-meaning as in `scrollview--refresh-window'."
+When WINDOW is non-nil, refresh only that window."
   (unless scrollview--refreshing
     (let ((scrollview--refreshing t)
           (inhibit-redisplay t))
-      (unless reuse-signs
-        (scrollview--sync-faces))
+      (scrollview--sync-faces)
       (scrollview--initialize-builtins)
-      (unless reuse-signs
-        (scrollview--cleanup-dead-windows))
+      (scrollview--cleanup-dead-windows)
       (if window
-          (scrollview--refresh-window window reuse-signs)
+          (scrollview--refresh-window window)
         (dolist (window (scrollview--all-windows))
           (if (scrollview--window-eligible-p window)
-              (scrollview--refresh-window window reuse-signs)
+              (scrollview--refresh-window window)
             (scrollview--delete-window-overlays window)))))))
 
 ;;;###autoload
@@ -910,7 +847,7 @@ meaning as in `scrollview--refresh-window'."
 When WINDOW is non-nil, refresh only that window.  Interactively, refresh all
 eligible windows."
   (interactive)
-  (scrollview--refresh-now window nil))
+  (scrollview--refresh-now window))
 
 
 ;;; Scheduling and hooks
@@ -947,7 +884,7 @@ eligible windows."
 Keeping this synchronous prevents stale scrollview overlays from riding along
 with the text for one redisplay frame before the debounced refresh corrects
 them."
-  (scrollview--refresh-now window t))
+  (scrollview--refresh-now window))
 
 (defun scrollview--after-change (&rest _)
   "Refresh windows showing the current buffer after buffer changes."
@@ -1000,7 +937,7 @@ them."
   "Return position info when WINDOW currently displays scrollview."
   (when (scrollview--window-eligible-p window)
     (let* ((info (scrollview--position-info window))
-           (sign-items (scrollview--collect-sign-items-cached window t)))
+           (sign-items (scrollview--collect-sign-items-cached window)))
       (when (scrollview--should-render-p info sign-items)
         info))))
 
@@ -1071,19 +1008,13 @@ LOCATION is one of `next', `prev', `first', or `last'."
              ('next (or (nth (1- count)
                              (seq-filter
                               (lambda (line) (> line current)) lines))
-                        (and scrollview-wrap-navigation
-                             (nth (mod (1- count) (length lines)) lines))
-                        (car (last lines))))
-             ('prev (let ((previous
-                           (nreverse
-                            (seq-filter
-                             (lambda (line) (< line current)) lines))))
-                      (or (nth (1- count) previous)
-                          (and scrollview-wrap-navigation
-                               (nth (mod (1- count) (length lines))
-                                    (reverse lines)))
-                          (car lines)))))))
-    (goto-char (point-min))
+                        (user-error "No next scrollview sign")))
+             ('prev (or (nth (1- count)
+                             (nreverse
+                              (seq-filter
+                               (lambda (line) (< line current)) lines)))
+                        (user-error "No previous scrollview sign"))))))
+      (goto-char (point-min))
       (forward-line (1- target)))))
 
 ;;;###autoload

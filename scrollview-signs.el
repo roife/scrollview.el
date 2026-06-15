@@ -22,10 +22,7 @@
 (declare-function smerge-find-conflict "smerge-mode" (&optional limit))
 (declare-function hl-todo--search "hl-todo" (&optional regexp bound backward))
 (declare-function diff-hl-changes "diff-hl" ())
-(declare-function diff-hl-changes-from-buffer "diff-hl" (buf))
 (declare-function flyspell-overlay-p "flyspell" (overlay))
-(declare-function bookmark-get-filename "bookmark" (bookmark-name-or-record))
-(declare-function bookmark-get-position "bookmark" (bookmark-name-or-record))
 (declare-function compilation--ensure-parse "compile" (limit))
 (declare-function compilation--message->loc "compile" (message))
 (declare-function compilation--message->type "compile" (message))
@@ -35,7 +32,6 @@
 (defvar eglot--highlights)
 (defvar highlight-changes-mode)
 (defvar highlight-changes-visible-mode)
-(defvar highlight-symbol)
 (defvar highlight-symbol-keyword-alist)
 (defvar hl-todo-keyword-faces)
 (defvar diff-hl-reference-revision)
@@ -176,11 +172,6 @@ literally with `search-forward'."
      ((or (memq level '(:note note :info info))
           (eq category 'flymake-note))
       'info)
-     ((numberp level)
-      (cond
-       ((<= level 1) 'error)
-       ((= level 2) 'warning)
-       (t 'info)))
      (t 'info))))
 
 (defun scrollview--diagnostic-lines ()
@@ -193,39 +184,34 @@ literally with `search-forward'."
                         (symbol-value 'flycheck-current-errors)))
    (lambda ()
      (let ((buffer-lines (scrollview--line-count))
-           (result (list :error nil :warning nil :info nil)))
+           (result (list (cons 'error nil)
+                         (cons 'warning nil)
+                         (cons 'info nil))))
        (when (fboundp 'flymake-diagnostics)
-         (ignore-errors
-           (dolist (diag (flymake-diagnostics (point-min) (point-max)))
-             (let ((level (scrollview--diagnostic-level
-                           (flymake-diagnostic-type diag))))
-               (let ((key (scrollview--variant-key level)))
-                 (plist-put result key
-                            (cons (line-number-at-pos
-                                   (flymake-diagnostic-beg diag) t)
-                                  (plist-get result key))))))))
+         (dolist (diag (flymake-diagnostics (point-min) (point-max)))
+           (let* ((level (scrollview--diagnostic-level
+                          (flymake-diagnostic-type diag)))
+                  (cell (assq level result)))
+             (setcdr cell (cons (line-number-at-pos
+                                 (flymake-diagnostic-beg diag) t)
+                                (cdr cell))))))
        (when (and (boundp 'flycheck-current-errors)
                   (fboundp 'flycheck-error-line)
                   (fboundp 'flycheck-error-level))
-         (ignore-errors
-           (dolist (err (symbol-value 'flycheck-current-errors))
-             (let ((level (scrollview--diagnostic-level
-                           (flycheck-error-level err))))
-               (when-let ((line (flycheck-error-line err)))
-                 (let ((key (scrollview--variant-key level)))
-                   (plist-put result key
-                              (cons line (plist-get result key)))))))))
-       (list :error (scrollview--clamp-lines
-                     (plist-get result :error) buffer-lines)
-             :warning (scrollview--clamp-lines
-                       (plist-get result :warning) buffer-lines)
-             :info (scrollview--clamp-lines
-                    (plist-get result :info) buffer-lines))))))
+         (dolist (err (symbol-value 'flycheck-current-errors))
+           (let ((level (scrollview--diagnostic-level
+                         (flycheck-error-level err))))
+             (when-let ((line (flycheck-error-line err)))
+               (let ((cell (assq level result)))
+                 (setcdr cell (cons line (cdr cell))))))))
+       (mapcar (lambda (cell)
+                 (cons (car cell)
+                       (scrollview--clamp-lines (cdr cell) buffer-lines)))
+               result)))))
 
 (defun scrollview--collect-diagnostic-lines (level &rest _)
   "Collect diagnostic lines for LEVEL from Flymake and loaded Flycheck."
-  (plist-get (scrollview--diagnostic-lines)
-             (scrollview--variant-key level)))
+  (cdr (assq level (scrollview--diagnostic-lines))))
 
 (defun scrollview--compilation-buffers ()
   "Return live compilation buffers, excluding grep buffers."
@@ -246,16 +232,12 @@ literally with `search-forward'."
 
 (defun scrollview--compilation-type-level (type)
   "Return a sign level for compilation message TYPE."
-  (cond
-   ((and (numberp type) (>= type 2)) 'error)
-   ((and (numberp type) (= type 1)) 'warning)
-   (t 'info)))
+  (pcase type (2 'error) (1 'warning) (_ 'info)))
 
 (defun scrollview--compilation-message-list ()
   "Return parsed compilation messages in the current compilation buffer."
   (when (fboundp 'compilation--ensure-parse)
-    (ignore-errors
-      (compilation--ensure-parse (point-max))))
+    (compilation--ensure-parse (point-max)))
   (let ((pos (point-min))
         messages)
     (while (< pos (point-max))
@@ -310,8 +292,7 @@ literally with `search-forward'."
 (defun scrollview--compilation-message-line
     (message source-buffer source-file)
   "Return source line for compilation MESSAGE in SOURCE-BUFFER or SOURCE-FILE."
-  (when-let ((loc (ignore-errors
-                    (compilation--message->loc message))))
+  (when-let ((loc (compilation--message->loc message)))
     (scrollview--compilation-loc-line loc source-buffer source-file)))
 
 (defun scrollview--compilation-lines ()
@@ -326,31 +307,29 @@ literally with `search-forward'."
            :source-file source-file
            :compilation compilation-token)
      (lambda ()
-       (let ((result (list :error nil :warning nil :info nil)))
+       (let ((result (list (cons 'error nil)
+                           (cons 'warning nil)
+                           (cons 'info nil))))
          (dolist (buffer (scrollview--compilation-buffers))
            (with-current-buffer buffer
              (dolist (message (scrollview--compilation-message-list))
                (when-let ((line (scrollview--compilation-message-line
                                   message source-buffer source-file)))
-                 (let ((key (scrollview--variant-key
-                             (scrollview--compilation-type-level
-                              (ignore-errors
-                                (compilation--message->type message))))))
-                   (plist-put result key
-                              (cons line (plist-get result key))))))))
+                 (let* ((level (scrollview--compilation-type-level
+                                (compilation--message->type message)))
+                        (cell (assq level result)))
+                   (setcdr cell (cons line (cdr cell))))))))
          (with-current-buffer source-buffer
            (let ((buffer-lines (scrollview--line-count)))
-             (list :error (scrollview--clamp-lines
-                           (plist-get result :error) buffer-lines)
-                   :warning (scrollview--clamp-lines
-                             (plist-get result :warning) buffer-lines)
-                   :info (scrollview--clamp-lines
-                          (plist-get result :info) buffer-lines)))))))))
+             (mapcar (lambda (cell)
+                       (cons (car cell)
+                             (scrollview--clamp-lines (cdr cell)
+                                                      buffer-lines)))
+                     result))))))))
 
 (defun scrollview--collect-compilation-lines (level &rest _)
   "Collect compilation result lines for LEVEL."
-  (plist-get (scrollview--compilation-lines)
-             (scrollview--variant-key level)))
+  (cdr (assq level (scrollview--compilation-lines))))
 
 (defun scrollview--regexp-lines (pattern)
   "Return buffer lines matching regexp PATTERN."
@@ -367,10 +346,6 @@ literally with `search-forward'."
           (when (and (stringp pattern)
                      (not (string-empty-p pattern)))
             (cl-pushnew pattern patterns :test #'equal)))))
-    (when (boundp 'highlight-symbol)
-      (when (and (stringp highlight-symbol)
-                 (not (string-empty-p highlight-symbol)))
-        (cl-pushnew highlight-symbol patterns :test #'equal)))
     (nreverse patterns)))
 
 (defun scrollview--highlight-symbol-lines ()
@@ -428,15 +403,14 @@ literally with `search-forward'."
          :generation scrollview--highlight-changes-state-generation)
    (lambda ()
      (when (scrollview--highlight-changes-active-p)
-       (list :change (scrollview--highlight-changes-property-lines
-                      'hilit-chg)
-             :delete (scrollview--highlight-changes-property-lines
-                      'hilit-chg-delete))))))
+       (list (cons 'change (scrollview--highlight-changes-property-lines
+                            'hilit-chg))
+             (cons 'delete (scrollview--highlight-changes-property-lines
+                            'hilit-chg-delete)))))))
 
 (defun scrollview--collect-highlight-changes-lines (variant &rest _)
   "Collect Highlight Changes sign lines for VARIANT."
-  (plist-get (scrollview--highlight-changes-lines)
-             (scrollview--variant-key variant)))
+  (cdr (assq variant (scrollview--highlight-changes-lines))))
 
 (defun scrollview--overlay-line (overlay)
   "Return the one-based current-buffer line for OVERLAY."
@@ -455,11 +429,8 @@ literally with `search-forward'."
 
 (defun scrollview--symbol-overlay-overlays ()
   "Return active symbol-overlay overlays for the current buffer."
-  (if (fboundp 'symbol-overlay-get-list)
-      (ignore-errors (symbol-overlay-get-list 0))
-    (seq-filter (lambda (overlay)
-                  (overlay-get overlay 'symbol))
-                (overlays-in (point-min) (point-max)))))
+  (when (fboundp 'symbol-overlay-get-list)
+    (symbol-overlay-get-list 0)))
 
 (defun scrollview--symbol-overlay-token (overlays)
   "Return a cache token for symbol-overlay OVERLAYS."
@@ -494,16 +465,19 @@ literally with `search-forward'."
           (ignore-errors (file-equal-p left right))))))
 
 (defun scrollview--bookmark-position-line (position)
-  "Return the line for bookmark POSITION in the current buffer."
-  (cond
-   ((markerp position)
-    (when (and (eq (marker-buffer position) (current-buffer))
-               (marker-position position))
-      (line-number-at-pos position t)))
-   ((integerp position)
+  "Return the line for bookmark integer POSITION in the current buffer."
+  (when (integerp position)
     (save-excursion
       (goto-char (min (point-max) (max (point-min) position)))
-      (line-number-at-pos nil t)))))
+      (line-number-at-pos nil t))))
+
+(defun scrollview--bookmark-record-filename (bookmark)
+  "Return the filename stored in BOOKMARK record, if any."
+  (cdr (assq 'filename (cdr bookmark))))
+
+(defun scrollview--bookmark-record-position (bookmark)
+  "Return the position stored in BOOKMARK record, if any."
+  (cdr (assq 'position (cdr bookmark))))
 
 (defun scrollview--bookmark-lines ()
   "Return bookmark lines for the current file buffer."
@@ -519,10 +493,10 @@ literally with `search-forward'."
                   (boundp 'bookmark-alist))
          (scrollview--dedupe-sorted-lines
           (cl-loop for bookmark in bookmark-alist
-                   for bookmark-file = (ignore-errors
-                                         (bookmark-get-filename bookmark))
-                   for position = (ignore-errors
-                                    (bookmark-get-position bookmark))
+                   for bookmark-file = (scrollview--bookmark-record-filename
+                                        bookmark)
+                   for position = (scrollview--bookmark-record-position
+                                   bookmark)
                    for line = (and (scrollview--same-file-p
                                     file bookmark-file)
                                    (scrollview--bookmark-position-line
@@ -536,33 +510,13 @@ literally with `search-forward'."
 
 (defun scrollview--eglot-available-p ()
   "Return non-nil when Eglot highlight state may be present."
-  (or (boundp 'eglot--highlights)
-      (facep 'eglot-highlight-symbol-face)))
-
-(defun scrollview--face-includes-p (face target)
-  "Return non-nil when FACE includes TARGET."
-  (cond
-   ((eq face target) t)
-   ((consp face)
-    (cl-some (lambda (entry)
-               (scrollview--face-includes-p entry target))
-             face))))
+  (boundp 'eglot--highlights))
 
 (defun scrollview--eglot-highlight-overlays ()
   "Return active Eglot document-highlight overlays for the current buffer."
-  (when (scrollview--eglot-available-p)
-    (let ((overlays
-           (append
-            (when (and (boundp 'eglot--highlights)
-                       (listp eglot--highlights))
-              eglot--highlights)
-            (seq-filter
-             (lambda (overlay)
-               (scrollview--face-includes-p
-                (overlay-get overlay 'face)
-                'eglot-highlight-symbol-face))
-             (overlays-in (point-min) (point-max))))))
-      (seq-uniq (seq-filter #'overlayp overlays) #'eq))))
+  (when (and (boundp 'eglot--highlights)
+             (listp eglot--highlights))
+    (seq-filter #'overlayp eglot--highlights)))
 
 (defun scrollview--eglot-highlight-token-value (overlays)
   "Return a cache token for Eglot highlight OVERLAYS."
@@ -588,7 +542,7 @@ literally with `search-forward'."
   (scrollview--eglot-highlight-lines))
 
 (defun scrollview--conflict-lines ()
-  "Return smerge conflict marker lines as a plist."
+  "Return smerge conflict marker lines as an alist by variant."
   (scrollview--cached-collector-value
    'conflicts
    (list :tick (buffer-chars-modified-tick))
@@ -598,41 +552,18 @@ literally with `search-forward'."
          (save-excursion
            (save-match-data
              (goto-char (point-min))
-             (while (ignore-errors (smerge-find-conflict nil))
+             (while (smerge-find-conflict nil)
                (push (line-number-at-pos (match-beginning 0) t) top)
                (when (match-beginning 5)
                  (push (line-number-at-pos (match-beginning 5) t) middle))
                (push (line-number-at-pos (match-end 3) t) bottom)))))
-       (list :top (scrollview--dedupe-sorted-lines top)
-             :middle (scrollview--dedupe-sorted-lines middle)
-             :bottom (scrollview--dedupe-sorted-lines bottom))))))
+       (list (cons 'top (scrollview--dedupe-sorted-lines top))
+             (cons 'middle (scrollview--dedupe-sorted-lines middle))
+             (cons 'bottom (scrollview--dedupe-sorted-lines bottom)))))))
 
 (defun scrollview--collect-conflict-lines (variant &rest _)
   "Collect conflict marker lines for VARIANT."
-  (plist-get (scrollview--conflict-lines)
-             (scrollview--variant-key variant)))
-
-(defun scrollview--keyword-face (variant)
-  "Return the face for keyword VARIANT."
-  (pcase variant
-    ('todo 'scrollview-keyword-todo-face)
-    ('fixme 'scrollview-keyword-fixme-face)
-    ('hack 'scrollview-keyword-hack-face)
-    ('note 'scrollview-keyword-note-face)
-    ('workaround 'scrollview-keyword-workaround-face)
-    ('trick-r 'scrollview-keyword-trick-r-face)
-    ('defect 'scrollview-keyword-defect-face)
-    ('issue 'scrollview-keyword-issue-face)
-    (_ 'scrollview-keyword-face)))
-
-(defun scrollview--keyword-priority (variant)
-  "Return the sign priority for keyword VARIANT."
-  (pcase variant
-    ('todo 30)
-    ('issue 25)
-    ((or 'fixme 'hack 'workaround 'trick-r 'defect) 20)
-    ('note 15)
-    (_ 10)))
+  (cdr (assq variant (scrollview--conflict-lines))))
 
 (defun scrollview--hl-todo-available-p ()
   "Return non-nil when hl-todo can provide keyword matching."
@@ -652,15 +583,8 @@ literally with `search-forward'."
   "Return the hl-todo variant whose configured keyword matches MATCH."
   (cl-loop for (keyword . _) in (and (boundp 'hl-todo-keyword-faces)
                                      hl-todo-keyword-faces)
-           when (ignore-errors
-                  (string-match-p (concat "\\`\\(?:" keyword "\\)\\'")
-                                  match))
+           when (string-match-p (concat "\\`\\(?:" keyword "\\)\\'") match)
            return (scrollview--hl-todo-keyword-variant keyword)))
-
-(defun scrollview--ensure-syntax-propertized ()
-  "Ensure syntax properties are ready for full-buffer sign scans."
-  (ignore-errors
-    (syntax-propertize (point-max))))
 
 (defun scrollview--hl-todo-lines ()
   "Return hl-todo keyword lines grouped by variant."
@@ -672,11 +596,11 @@ literally with `search-forward'."
    (lambda ()
      (let (lines)
        (when (scrollview--hl-todo-available-p)
-         (scrollview--ensure-syntax-propertized)
+         (syntax-propertize (point-max))
          (save-excursion
            (save-match-data
              (goto-char (point-min))
-             (while (ignore-errors (hl-todo--search))
+             (while (hl-todo--search)
                (when-let* ((keyword (match-string-no-properties 2))
                            (variant (scrollview--hl-todo-match-variant
                                      keyword)))
@@ -727,23 +651,13 @@ literally with `search-forward'."
   "Return non-nil when diff-hl can provide VC changes."
   (require 'diff-hl nil t))
 
-(defun scrollview--diff-hl-change-value (value)
-  "Return diff-hl hunk tuples from VALUE."
-  (cond
-   ((null value) nil)
-   ((listp value) value)
-   ((bufferp value)
-    (diff-hl-changes-from-buffer value))
-   ((stringp value)
-    (when-let ((buffer (get-buffer value)))
-      (diff-hl-changes-from-buffer buffer)))))
-
 (defun scrollview--diff-hl-hunks ()
   "Return diff-hl hunk tuples for the current buffer."
   (when (scrollview--diff-hl-available-p)
     (let ((diff-hl-update-async nil))
-      (cl-loop for (_ . value) in (ignore-errors (diff-hl-changes))
-               append (scrollview--diff-hl-change-value value)))))
+      (cl-loop for (_ . value) in (diff-hl-changes)
+               when (listp value)
+               append value))))
 
 (defun scrollview--vc-lines ()
   "Return VC sign lines reported by diff-hl."
@@ -758,36 +672,31 @@ literally with `search-forward'."
          :generation scrollview--vc-state-generation)
    (lambda ()
      (let ((buffer-lines (scrollview--line-count))
-           (result (list :add nil :change nil :delete nil)))
+           (result (list (cons 'add nil)
+                         (cons 'change nil)
+                         (cons 'delete nil))))
        (dolist (hunk (scrollview--diff-hl-hunks))
          (pcase-let ((`(,line ,inserts ,_deletes ,type) hunk))
-           (when-let ((key (pcase type
-                              ('insert :add)
-                              ('change :change)
-                              ('delete :delete))))
-             (plist-put result key
-                        (nconc (number-sequence
-                                line (+ line (max 1
-                                                  (if (eq type 'delete)
-                                                      1
-                                                    inserts))
-                                        -1))
-                               (plist-get result key))))))
-       (list :add (scrollview--clamp-lines
-                   (plist-get result :add) buffer-lines)
-             :change (scrollview--clamp-lines
-                      (plist-get result :change) buffer-lines)
-             :delete (scrollview--clamp-lines
-                      (plist-get result :delete) buffer-lines))))))
+           (when-let* ((variant (pcase type
+                                  ('insert 'add)
+                                  ('change 'change)
+                                  ('delete 'delete)))
+                       (cell (assq variant result)))
+             (setcdr cell (nconc (number-sequence
+                                  line (+ line (max 1
+                                                    (if (eq type 'delete)
+                                                        1
+                                                      inserts))
+                                          -1))
+                                 (cdr cell))))))
+       (mapcar (lambda (cell)
+                 (cons (car cell)
+                       (scrollview--clamp-lines (cdr cell) buffer-lines)))
+               result)))))
 
 (defun scrollview--collect-vc-lines (variant &rest _)
   "Collect VC sign lines for VARIANT."
-  (plist-get (scrollview--vc-lines)
-             (scrollview--variant-key variant)))
-
-(defun scrollview--variant-key (variant)
-  "Return plist keyword for VARIANT."
-  (intern (concat ":" (symbol-name variant))))
+  (cdr (assq variant (scrollview--vc-lines))))
 
 (defun scrollview--keyword-sign-specs ()
   "Return built-in keyword sign specs from hl-todo."
@@ -800,9 +709,12 @@ literally with `search-forward'."
              collect (progn
                        (push variant seen)
                        (list :variant variant
-                             :priority (scrollview--keyword-priority variant)
-                             :bitmap (scrollview--keyword-bitmap variant)
-                             :face (scrollview--keyword-face variant)
+                             :priority (scrollview--keyword-attr variant
+                                                                   :priority)
+                             :bitmap (scrollview--keyword-attr variant
+                                                               :bitmap)
+                             :face (scrollview--keyword-attr variant
+                                                             :face)
                              :collector (apply-partially
                                          #'scrollview--collect-keyword-lines
                                          variant))))))

@@ -70,9 +70,6 @@ Common alternatives:
 | `scrollview-byte-limit` | `1000000` | Above this buffer size, restricted mode disables signs.  Set to `-1` to disable the limit. |
 | `scrollview-signs-on-startup` | `all` | Built-in sign groups enabled on first use.  Use `all`, `nil`, or a list of group symbols. |
 | `scrollview-refresh-delay` | `0.03` | Idle delay, in seconds, for scheduled refreshes. |
-| `scrollview-scrollbar-priority` | `0` | Scrollbar priority when a sign lands on the same display row. |
-| `scrollview-overlay-priority` | `1000` | Overlay priority used for rendered indicators. |
-| `scrollview-wrap-navigation` | `t` | `scrollview-next` and `scrollview-prev` wrap around buffer ends. |
 
 Restricted mode keeps the scrollbar and skips sign collection.
 
