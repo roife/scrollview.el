@@ -29,10 +29,6 @@
 (defvar-local scrollview-margin--saved-area nil
   "Saved `scrollview-area' state before `scrollview-margin-local-mode'.")
 
-(defvar-local scrollview--margin-width-state nil
-  "Saved margin width state before scrollview changed it.
-When non-nil, a list (VAR LOCAL-P VALUE).")
-
 ;;; Internal state
 
 (cl-defstruct (scrollview--sign-spec
@@ -41,6 +37,9 @@ When non-nil, a list (VAR LOCAL-P VALUE).")
 
 (defvar scrollview--window-overlays (make-hash-table :test #'eq)
   "Hash table mapping windows to their scrollview overlays.")
+
+(defvar scrollview--window-margins (make-hash-table :test #'eq)
+  "Hash table mapping windows to margins saved before scrollview changed them.")
 
 (defvar scrollview--pending-windows (make-hash-table :test #'eq)
   "Hash table of windows queued for refresh.")
@@ -255,57 +254,32 @@ overlays."
       t
     (scrollview--fringe-available-p window)))
 
-(defun scrollview--margin-width-variable ()
-  "Return the margin width variable for `scrollview-side'."
-  (if (eq scrollview-side 'left) 'left-margin-width 'right-margin-width))
-
 (defun scrollview--ensure-window-margins (window)
   "Ensure WINDOW has enough margin space for scrollview."
-  (when (and (window-live-p window)
-             (scrollview--margin-area-p))
+  (when (window-live-p window)
     (with-current-buffer (window-buffer window)
-      (let ((width-var (scrollview--margin-width-variable)))
-        (when (zerop (or (symbol-value width-var) 0))
-          (unless scrollview--margin-width-state
-            (setq-local scrollview--margin-width-state
-                        (list width-var
-                              (local-variable-p width-var)
-                              (symbol-value width-var))))
-          (set (make-local-variable width-var) 1))
-        (dolist (buffer-window (get-buffer-window-list (current-buffer) nil t))
-          (set-window-buffer buffer-window (current-buffer)))))))
-
-(defun scrollview--buffer-has-window-overlays-p (buffer)
-  "Return non-nil if BUFFER still has rendered scrollview overlays."
-  (let (found)
-    (maphash (lambda (window overlays)
-               (when (and overlays
-                          (window-live-p window)
-                          (eq (window-buffer window) buffer))
-                 (setq found t)))
-             scrollview--window-overlays)
-    found))
+      (when (scrollview--margin-area-p)
+        (pcase-let* ((`(,left . ,right) (window-margins window))
+                     (target (if (eq scrollview-side 'left) left right)))
+          (when (zerop (or target 0))
+            (unless (gethash window scrollview--window-margins)
+              (puthash window (cons left right) scrollview--window-margins))
+            (if (eq scrollview-side 'left)
+                (set-window-margins window 1 right)
+              (set-window-margins window left 1))))))))
 
 (defun scrollview--restore-window-margins (window)
   "Restore WINDOW margins saved by scrollview."
-  (when (window-live-p window)
-    (with-current-buffer (window-buffer window)
-      (when (and scrollview--margin-width-state
-                 (or (not (scrollview--margin-area-p))
-                     (not (scrollview--buffer-has-window-overlays-p
-                           (current-buffer)))))
-        (pcase-let ((`(,width-var ,local-p ,value)
-                     scrollview--margin-width-state))
-          (if local-p
-              (set (make-local-variable width-var) value)
-            (kill-local-variable width-var)))
-        (setq scrollview--margin-width-state nil)
-        (dolist (buffer-window (get-buffer-window-list (current-buffer) nil t))
-          (set-window-buffer buffer-window (current-buffer)))))))
+  (when-let ((margins (gethash window scrollview--window-margins)))
+    (when (window-live-p window)
+      (set-window-margins window (car margins) (cdr margins)))
+    (remhash window scrollview--window-margins)))
 
 (defun scrollview--prepare-window-display-area (window)
   "Prepare WINDOW to display scrollview in the configured area."
-  (if (scrollview--margin-area-p)
+  (if (and (window-live-p window)
+           (with-current-buffer (window-buffer window)
+             (scrollview--margin-area-p)))
       (scrollview--ensure-window-margins window)
     (scrollview--restore-window-margins window)))
 
@@ -337,6 +311,10 @@ overlays."
                (unless (window-live-p window)
                  (cl-pushnew window dead :test #'eq)))
              scrollview--window-sign-cache)
+    (maphash (lambda (window _margins)
+               (unless (window-live-p window)
+                 (cl-pushnew window dead :test #'eq)))
+             scrollview--window-margins)
     (dolist (window dead)
       (scrollview--delete-window-overlays window)
       (remhash window scrollview--window-sign-cache))))
