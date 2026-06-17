@@ -1,11 +1,5 @@
 # scrollview.el
 
-Scrollbar and document signs for Emacs.
-
-`scrollview.el` renders into the left or right fringe, or into a one-column
-window margin for terminal frames, with ordinary overlays and display specs.  It
-does not use child frames.
-
 **Requirements**: Emacs 29.1 or newer
 
 ## Installation
@@ -75,20 +69,20 @@ Restricted mode keeps the scrollbar and skips sign collection.
 
 ## Built-In Signs
 
-| Group | Source | Variants | Default priority | Default face | Fringe symbol | Margin glyph |
-| --- | --- | --- | --- | --- | --- | --- |
-| `search` | Active isearch, or retained lazy-highlight overlays after isearch exits | `match` | `100` | `scrollview-search-face` | `=` | `=` |
-| `highlight-symbol` | `highlight-symbol` highlighted regexps, when `highlight-symbol` is loaded | `match` | `70` | `scrollview-highlight-symbol-face` | `=` | `=` |
-| `highlight-changes` | `highlight-changes-mode` changes, only while `highlight-changes-visible-mode` is enabled | `change`, `delete` | `80` | `change` `scrollview-highlight-changes-face`, `delete` `scrollview-highlight-changes-delete-face` | `change` `C`, `delete` `X` | `change` `C`, `delete` `X` |
-| `symbol-overlay` | `symbol-overlay` overlays, when `symbol-overlay` is loaded | `match` | `90` | `scrollview-symbol-overlay-face` | `=` | `=` |
-| `bookmarks` | File bookmarks from `bookmark-alist` | `bookmark` | `30` | `scrollview-bookmark-face` | `%` | `%` |
-| `eglot` | Existing Eglot document-highlight overlays | `highlight` | `90` | `scrollview-eglot-face` | `=` | `=` |
-| `diagnostics` | Flymake diagnostics and Flycheck errors when Flycheck is loaded | `error`, `warning`, `info` | `error` `60`, `warning` `58`, `info` `35` | `error` `scrollview-diagnostic-error-face`, `warning` `scrollview-diagnostic-warning-face`, `info` `scrollview-diagnostic-info-face` | `o` | `!` |
-| `compilation` | Parsed `compilation-mode` messages, excluding `grep-mode` buffers | `error`, `warning`, `info` | `error` `60`, `warning` `58`, `info` `35` | `error` `scrollview-compilation-error-face`, `warning` `scrollview-compilation-warning-face`, `info` `scrollview-compilation-info-face` | `o` | `!` |
-| `conflicts` | `smerge-mode` conflict markers | `top`, `middle`, `bottom` | `70` | `top` `scrollview-conflict-top-face`, `middle` `scrollview-conflict-middle-face`, `bottom` `scrollview-conflict-bottom-face` | `*` | `top` `<`, `middle` `=`, `bottom` `>` |
-| `keywords` | `hl-todo` keywords from `hl-todo-keyword-faces` | One variant per configured keyword; `TRICK(R)` becomes `trick-r` | `TODO` `30`, `FIXME` `20`, `HACK` `20`, `NOTE` `15`, `WORKAROUND` `20`, `TRICK(R)` `20`, `DEFECT` `20`, `ISSUE` `25`, other keywords `10` | `TODO` `scrollview-keyword-todo-face`, `FIXME` `scrollview-keyword-fixme-face`, `HACK` `scrollview-keyword-hack-face`, `NOTE` `scrollview-keyword-note-face`, `WORKAROUND` `scrollview-keyword-workaround-face`, `TRICK(R)` `scrollview-keyword-trick-r-face`, `DEFECT` `scrollview-keyword-defect-face`, `ISSUE` `scrollview-keyword-issue-face`, other keywords `scrollview-keyword-face` | `TODO` `T`, `FIXME` `F`, `HACK` `H`, `NOTE` `N`, `WORKAROUND` `W`, `TRICK(R)` `R`, `DEFECT` `D`, `ISSUE` `I`, other keywords `*` | `TODO` `T`, `FIXME` `F`, `HACK` `H`, `NOTE` `N`, `WORKAROUND` `W`, `TRICK(R)` `R`, `DEFECT` `D`, `ISSUE` `I`, other keywords `*` |
-| `spell` | Flyspell overlays | `misspelled` | `50` | `scrollview-spell-face` | `~` | `~` |
-| `vc` | `diff-hl` hunks | `add`, `change`, `delete` | `40` | `add` `scrollview-vc-add-face`, `change` `scrollview-vc-change-face`, `delete` `scrollview-vc-delete-face` | `add` and `change` <code>&#124;</code>, `delete` `=` | `add` `+`, `change` <code>&#124;</code>, `delete` `-` |
+| Group | Default priority | Default face | Fringe symbol | Margin glyph |
+| --- | --- | --- | --- | --- |
+| `search` | `100` | `scrollview-search-face` | `=` | `=` |
+| `highlight-symbol` | `70` | `scrollview-highlight-symbol-face` | `=` | `=` |
+| `highlight-changes` | `80` | `change` `scrollview-highlight-changes-face`, `delete` `scrollview-highlight-changes-delete-face` | `change` `C`, `delete` `X` | `change` `C`, `delete` `X` |
+| `symbol-overlay` | `90` | `scrollview-symbol-overlay-face` | `=` | `=` |
+| `bookmarks` | `30` | `scrollview-bookmark-face` | `%` | `%` |
+| `eglot` | `90` | `scrollview-eglot-face` | `=` | `=` |
+| `diagnostics` | `error` `60`, `warning` `58`, `info` `35` | `error` `scrollview-diagnostic-error-face`, `warning` `scrollview-diagnostic-warning-face`, `info` `scrollview-diagnostic-info-face` | `o` | `!` |
+| `compilation` | `error` `60`, `warning` `58`, `info` `35` | `error` `scrollview-compilation-error-face`, `warning` `scrollview-compilation-warning-face`, `info` `scrollview-compilation-info-face` | `o` | `!` |
+| `conflicts` | `70` | `top` `scrollview-conflict-top-face`, `middle` `scrollview-conflict-middle-face`, `bottom` `scrollview-conflict-bottom-face` | `*` | `top` `<`, `middle` `=`, `bottom` `>` |
+| `keywords` | `TODO` `30`, `FIXME` `20`, `HACK` `20`, `NOTE` `15`, `WORKAROUND` `20`, `TRICK(R)` `20`, `DEFECT` `20`, `ISSUE` `25`, other keywords `10` | `TODO` `scrollview-keyword-todo-face`, `FIXME` `scrollview-keyword-fixme-face`, `HACK` `scrollview-keyword-hack-face`, `NOTE` `scrollview-keyword-note-face`, `WORKAROUND` `scrollview-keyword-workaround-face`, `TRICK(R)` `scrollview-keyword-trick-r-face`, `DEFECT` `scrollview-keyword-defect-face`, `ISSUE` `scrollview-keyword-issue-face`, other keywords `scrollview-keyword-face` | `TODO` `T`, `FIXME` `F`, `HACK` `H`, `NOTE` `N`, `WORKAROUND` `W`, `TRICK(R)` `R`, `DEFECT` `D`, `ISSUE` `I`, other keywords `*` | `TODO` `T`, `FIXME` `F`, `HACK` `H`, `NOTE` `N`, `WORKAROUND` `W`, `TRICK(R)` `R`, `DEFECT` `D`, `ISSUE` `I`, other keywords `*` |
+| `spell` | `50` | `scrollview-spell-face` | `~` | `~` |
+| `vc` | `40` | `add` `scrollview-vc-add-face`, `change` `scrollview-vc-change-face`, `delete` `scrollview-vc-delete-face` | `add` and `change` <code>&#124;</code>, `delete` `=` | `add` `+`, `change` <code>&#124;</code>, `delete` `-` |
 
 All built-in groups are enabled by default.  Groups backed by optional packages
 produce signs only when their package is available and has data for the current
@@ -116,7 +110,6 @@ Enable, disable, or toggle groups at runtime:
 | `scrollview-first` | Jump to the first visible sign. |
 | `scrollview-last` | Jump to the last visible sign. |
 | `scrollview-click` | Mouse command for fringe or margin clicks. |
-| `scrollview-legend` | Show registered sign specs, priorities, faces, and states. |
 | `scrollview-enable-sign-group` | Enable a sign group. |
 | `scrollview-disable-sign-group` | Disable a sign group. |
 | `scrollview-toggle-sign-group` | Toggle a sign group. |
@@ -131,15 +124,6 @@ position.
 Click a visible sign to jump to that sign's line.
 
 Mouse drag is not implemented.
-
-## Rendering Rules
-
-- One display slot is used per window row.
-- Higher priority wins when multiple items map to the same row.
-- At equal priority, the earlier registered sign spec wins.
-- A sign that replaces the scrollbar thumb uses the thumb background.
-- A sign outside the thumb is rendered without a background.
-- The scrollbar thumb follows the current `region` face color.
 
 ## Custom Signs
 

@@ -327,8 +327,9 @@ and priority 10.")
   (let ((state
          (cl-loop for (key target inherit source-face) in entries
                   collect (list key target inherit
-                                (scrollview--face-color
-                                 source-face :foreground)))))
+                                (or (scrollview--face-color
+                                     source-face :foreground)
+                                    'unspecified)))))
     (unless (equal state (symbol-value state-symbol))
       (set state-symbol state)
       (pcase-dolist (`(,_ ,target ,inherit ,color) state)
@@ -367,7 +368,8 @@ When HIGHLIGHTED is non-nil, use the scrollbar thumb background.  Otherwise,
 render without painting a background."
   (if (not (symbolp face))
       face
-    (let* ((foreground (scrollview--face-color face :foreground))
+    (let* ((foreground (or (scrollview--face-color face :foreground)
+                           'unspecified))
            (background (or (and highlighted
                                 (or (scrollview--face-color 'scrollview-thumb-face :background)
                                     (scrollview--selection-color)))
