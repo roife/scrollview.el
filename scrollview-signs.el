@@ -174,6 +174,14 @@ literally with `search-forward'."
       'info)
      (t 'info))))
 
+(defun scrollview--flymake-diagnostic-line (diag)
+  "Return the live current-buffer line for Flymake DIAG."
+  (let ((beg (flymake-diagnostic-beg diag)))
+    (when (and (integerp beg)
+               (<= (point-min) beg)
+               (<= beg (point-max)))
+      (line-number-at-pos beg t))))
+
 (defun scrollview--diagnostic-lines ()
   "Collect diagnostic lines from Flymake and Flycheck in one pass."
   (scrollview--cached-collector-value
@@ -192,9 +200,8 @@ literally with `search-forward'."
            (let* ((level (scrollview--diagnostic-level
                           (flymake-diagnostic-type diag)))
                   (cell (assq level result)))
-             (setcdr cell (cons (line-number-at-pos
-                                 (flymake-diagnostic-beg diag) t)
-                                (cdr cell))))))
+             (when-let ((line (scrollview--flymake-diagnostic-line diag)))
+               (setcdr cell (cons line (cdr cell)))))))
        (when (and (boundp 'flycheck-current-errors)
                   (fboundp 'flycheck-error-line)
                   (fboundp 'flycheck-error-level))

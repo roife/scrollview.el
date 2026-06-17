@@ -239,6 +239,135 @@ When STRING is non-nil, include it as the clicked string object."
             (should (equal info-lines '(3)))
             (should (= flymake-calls 1))))))))
 
+(ert-deftest scrollview-repro-stale-flymake-diagnostic-after-delete ()
+  (scrollview-test--reset-state)
+  (require 'flymake)
+  (scrollview-test--with-displayed-buffer
+    (insert (make-string 3080 ?x))
+    (let ((scrollview-signs-on-startup '(diagnostics))
+          (scrollview-area 'margin)
+          (scrollview-line-limit -1)
+          (scrollview-byte-limit -1)
+          stale-diagnostic)
+      (scrollview-mode 1)
+      (delete-region 3071 (point-max))
+      (setq stale-diagnostic
+            (flymake-make-diagnostic (current-buffer)
+                                      3076 3076
+                                      :error "stale diagnostic"))
+      (scrollview--schedule-refresh (selected-window))
+      (cl-letf (((symbol-function 'flymake-diagnostics)
+                 (lambda (_beg _end)
+                   (list stale-diagnostic))))
+        (should-not (scrollview--collect-diagnostic-lines 'error))
+        (scrollview--flush-refresh)))))
+
+(ert-deftest scrollview-repro-stale-flycheck-line-after-delete ()
+  (scrollview-test--reset-state)
+  (scrollview-test--with-displayed-buffer
+    (insert (make-string 3080 ?x))
+    (let ((scrollview-signs-on-startup '(diagnostics))
+          (scrollview-area 'margin)
+          (scrollview-line-limit -1)
+          (scrollview-byte-limit -1))
+      (scrollview-mode 1)
+      (delete-region 3071 (point-max))
+      (let ((flycheck-current-errors '((:line 3076 :level :error))))
+        (cl-letf (((symbol-function 'flycheck-error-line)
+                   (lambda (err)
+                     (plist-get err :line)))
+                  ((symbol-function 'flycheck-error-level)
+                   (lambda (err)
+                     (plist-get err :level))))
+          (should (equal (scrollview--collect-diagnostic-lines 'error)
+                         '(1))))))))
+
+(ert-deftest scrollview-repro-stale-bookmark-position-after-delete ()
+  (scrollview-test--reset-state)
+  (require 'bookmark)
+  (let ((file (make-temp-file "scrollview-bookmark-stale")))
+    (unwind-protect
+        (with-temp-buffer
+          (setq buffer-file-name file)
+          (insert (make-string 3080 ?x))
+          (delete-region 3071 (point-max))
+          (let ((bookmark-alist
+                 `(("stale" . ((filename . ,file) (position . 3076))))))
+            (should (equal (scrollview--collect-bookmark-lines nil)
+                           '(1)))))
+      (delete-file file))))
+
+(ert-deftest scrollview-repro-stale-symbol-overlay-after-delete ()
+  (scrollview-test--reset-state)
+  (with-temp-buffer
+    (insert (make-string 3080 ?x))
+    (let ((overlay (make-overlay 3076 3077)))
+      (unwind-protect
+          (progn
+            (overlay-put overlay 'symbol "x")
+            (delete-region 3071 (point-max))
+            (cl-incf scrollview--symbol-overlay-state-generation)
+            (cl-letf (((symbol-function 'symbol-overlay-get-list)
+                       (lambda (&optional _index _symbol)
+                         (list overlay))))
+              (should (equal (scrollview--collect-symbol-overlay-lines nil)
+                             '(1)))))
+        (delete-overlay overlay)))))
+
+(ert-deftest scrollview-repro-stale-eglot-overlay-after-delete ()
+  (scrollview-test--reset-state)
+  (with-temp-buffer
+    (insert (make-string 3080 ?x))
+    (let ((overlay (make-overlay 3076 3077)))
+      (unwind-protect
+          (let ((eglot--highlights (list overlay)))
+            (delete-region 3071 (point-max))
+            (cl-incf scrollview--eglot-highlight-state-generation)
+            (should (equal (scrollview--collect-eglot-highlight-lines nil)
+                           '(1))))
+        (delete-overlay overlay)))))
+
+(ert-deftest scrollview-repro-stale-spell-overlay-after-delete ()
+  (scrollview-test--reset-state)
+  (with-temp-buffer
+    (insert (make-string 3080 ?x))
+    (let ((overlay (make-overlay 3076 3077)))
+      (unwind-protect
+          (progn
+            (overlay-put overlay 'flyspell-overlay t)
+            (delete-region 3071 (point-max))
+            (cl-incf scrollview--spell-state-generation)
+            (should (equal (scrollview--collect-spell-lines nil)
+                           '(1))))
+        (delete-overlay overlay)))))
+
+(ert-deftest scrollview-repro-stale-compilation-marker-after-delete ()
+  (scrollview-test--reset-state)
+  (let ((source (generate-new-buffer " *scrollview-source*")))
+    (unwind-protect
+        (with-current-buffer source
+          (insert (make-string 3080 ?x))
+          (let ((marker (copy-marker 3076)))
+            (delete-region 3071 (point-max))
+            (should (= (marker-position marker) (point-max)))
+            (should (= (scrollview--compilation-loc-line
+                        (list nil 3076 nil marker)
+                        source nil)
+                       1))))
+      (kill-buffer source))))
+
+(ert-deftest scrollview-repro-stale-vc-line-after-delete ()
+  (scrollview-test--reset-state)
+  (with-temp-buffer
+    (insert (make-string 3080 ?x))
+    (delete-region 3071 (point-max))
+    (cl-letf (((symbol-function 'scrollview--diff-hl-available-p)
+               (lambda () t))
+              ((symbol-function 'diff-hl-changes)
+               (lambda ()
+                 '((:working . ((3076 1 0 insert)))))))
+      (should (equal (scrollview--collect-vc-lines 'add) '(1))))))
+
 (ert-deftest scrollview-compilation-collector-uses-parsed-messages ()
   (scrollview-test--reset-state)
   (require 'compile)
