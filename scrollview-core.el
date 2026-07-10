@@ -71,6 +71,11 @@
 (defvar scrollview--window-sign-cache (make-hash-table :test #'eq)
   "Hash table mapping windows to cached sign items.")
 
+(defvar scrollview--window-sign-row-cache (make-hash-table :test #'eq)
+  "Hash table mapping windows to cached sign-to-row candidates.
+The expensive mapping and priority reduction only depends on the identity of
+the cached sign item list and on track geometry, so scrolling can reuse it.")
+
 (defvar scrollview--sign-cache-generation 0
   "Generation number for invalidating cached sign items.")
 
@@ -162,6 +167,25 @@ rebuild.")
 (defun scrollview--dedupe-sorted-lines (lines)
   "Return sorted unique integer LINES."
   (seq-uniq (sort (seq-filter #'integerp lines) #'<) #'=))
+
+(defun scrollview--make-line-tracker ()
+  "Return mutable state for monotonically increasing position lookups."
+  (cons (point-min) (line-number-at-pos (point-min) t)))
+
+(defun scrollview--tracked-line-number (position tracker)
+  "Return the absolute line at POSITION and advance mutable TRACKER.
+POSITION values must be supplied in nondecreasing order.  Unlike repeated
+calls to `line-number-at-pos', this scans each intervening buffer region at
+most once."
+  (let ((line-start
+         (save-excursion
+           (goto-char position)
+           (line-beginning-position))))
+    (unless (= line-start (car tracker))
+      (setcdr tracker (+ (cdr tracker)
+                         (count-lines (car tracker) line-start)))
+      (setcar tracker line-start))
+    (cdr tracker)))
 
 (defun scrollview--clamp-lines (lines buffer-lines)
   "Clamp LINES to the one-based range of BUFFER-LINES."
@@ -270,7 +294,7 @@ overlays."
 
 (defun scrollview--restore-window-margins (window)
   "Restore WINDOW margins saved by scrollview."
-  (when-let ((margins (gethash window scrollview--window-margins)))
+  (when-let* ((margins (gethash window scrollview--window-margins)))
     (when (window-live-p window)
       (set-window-margins window (car margins) (cdr margins)))
     (remhash window scrollview--window-margins)))
@@ -311,20 +335,26 @@ overlays."
                (unless (window-live-p window)
                  (cl-pushnew window dead :test #'eq)))
              scrollview--window-sign-cache)
+    (maphash (lambda (window _entry)
+               (unless (window-live-p window)
+                 (cl-pushnew window dead :test #'eq)))
+             scrollview--window-sign-row-cache)
     (maphash (lambda (window _margins)
                (unless (window-live-p window)
                  (cl-pushnew window dead :test #'eq)))
              scrollview--window-margins)
     (dolist (window dead)
       (scrollview--delete-window-overlays window)
-      (remhash window scrollview--window-sign-cache))))
+      (remhash window scrollview--window-sign-cache)
+      (remhash window scrollview--window-sign-row-cache))))
 
 (defun scrollview--delete-window-overlays (window)
   "Delete scrollview overlays for WINDOW."
-  (when-let ((overlays (gethash window scrollview--window-overlays)))
+  (when-let* ((overlays (gethash window scrollview--window-overlays)))
     (mapc #'delete-overlay overlays)
     (remhash window scrollview--window-overlays))
   (remhash window scrollview--window-render-state)
+  (remhash window scrollview--window-sign-row-cache)
   (scrollview--restore-window-margins window))
 
 (defun scrollview--delete-buffer-overlays (&optional buffer)
@@ -344,6 +374,7 @@ overlays."
   "Invalidate cached sign items for all windows."
   (cl-incf scrollview--sign-cache-generation)
   (clrhash scrollview--window-sign-cache)
+  (clrhash scrollview--window-sign-row-cache)
   (clrhash scrollview--window-render-state))
 
 (defun scrollview--invalidate-buffer-sign-cache (&optional buffer)
@@ -356,7 +387,8 @@ overlays."
                  (push window windows)))
              scrollview--window-sign-cache)
     (dolist (window windows)
-      (remhash window scrollview--window-sign-cache))))
+      (remhash window scrollview--window-sign-cache)
+      (remhash window scrollview--window-sign-row-cache))))
 
 
 ;;; Position calculations
@@ -594,9 +626,12 @@ GROUPS may be nil, a symbol, or a list of symbols."
                (dolist (line (funcall
                               (scrollview--sign-spec-collector spec)
                               window))
-                 (when-let ((line (scrollview--normalize-line
-                                   line buffer-lines)))
-                   (push (list :line line :spec spec) items))))))
+                 (when-let* ((line (scrollview--normalize-line
+                                    line buffer-lines)))
+                   ;; A cons uses one cell versus four for a two-key plist.
+                   ;; Dense collectors can produce tens of thousands of
+                   ;; items, so this substantially reduces transient GC.
+                   (push (cons line spec) items))))))
          scrollview--sign-specs)))
     (nreverse items)))
 
@@ -618,6 +653,10 @@ GROUPS may be nil, a symbol, or a list of symbols."
     (if (and entry (equal token (plist-get entry :token)))
         (plist-get entry :items)
       (let ((items (scrollview--collect-sign-items window)))
+        ;; Collectors may syntax-propertize the buffer.  Store the token after
+        ;; collection so those internal text-property changes do not force an
+        ;; otherwise identical second collection on the next refresh.
+        (setq token (scrollview--sign-cache-token window))
         (puthash window (list :token token :items items)
                  scrollview--window-sign-cache)
         items))))
@@ -629,13 +668,69 @@ GROUPS may be nil, a symbol, or a list of symbols."
       (and (= priority (plist-get old :priority))
            (< order (plist-get old :order)))))
 
-(defun scrollview--build-slots (_window info sign-items)
-  "Return display slots using INFO and SIGN-ITEMS."
+(defun scrollview--sign-item-line (item)
+  "Return ITEM's line, accepting compact and legacy plist forms."
+  (if (integerp (car-safe item))
+      (car item)
+    (plist-get item :line)))
+
+(defun scrollview--sign-item-spec (item)
+  "Return ITEM's sign spec, accepting compact and legacy plist forms."
+  (if (integerp (car-safe item))
+      (cdr item)
+    (plist-get item :spec)))
+
+(defun scrollview--sign-item-better-p (item old)
+  "Return non-nil when sign ITEM should replace OLD on a display row."
+  (let* ((spec (scrollview--sign-item-spec item))
+         (priority (scrollview--sign-spec-priority spec))
+         (order (scrollview--sign-spec-id spec)))
+    (or (null old)
+        (let ((old-spec (scrollview--sign-item-spec old)))
+          (or (> priority (scrollview--sign-spec-priority old-spec))
+              (and (= priority (scrollview--sign-spec-priority old-spec))
+                   (< order (scrollview--sign-spec-id old-spec))))))))
+
+(defun scrollview--sign-row-candidates (window info sign-items)
+  "Return the winning sign item for every row described by INFO.
+Cache the reduction for WINDOW while SIGN-ITEMS and track geometry remain
+unchanged.  A cached sign list keeps its identity across scroll refreshes."
   (let* ((window-lines (plist-get info :window-lines))
          (track-lines (or (plist-get info :track-lines) window-lines))
          (buffer-lines (plist-get info :buffer-lines))
+         (entry (and window (gethash window scrollview--window-sign-row-cache))))
+    (if (and entry
+             (eq sign-items (plist-get entry :sign-items))
+             (= window-lines (plist-get entry :window-lines))
+             (= track-lines (plist-get entry :track-lines))
+             (= buffer-lines (plist-get entry :buffer-lines)))
+        (plist-get entry :candidates)
+      (let ((candidates (make-vector window-lines nil)))
+        (dolist (item sign-items)
+          (let* ((row (scrollview--line-to-row
+                       (scrollview--sign-item-line item)
+                       track-lines buffer-lines))
+                 (old (aref candidates row)))
+            (when (scrollview--sign-item-better-p item old)
+              (aset candidates row item))))
+        (when window
+          (puthash window
+                   (list :sign-items sign-items
+                         :window-lines window-lines
+                         :track-lines track-lines
+                         :buffer-lines buffer-lines
+                         :candidates candidates)
+                   scrollview--window-sign-row-cache))
+        candidates))))
+
+(defun scrollview--build-slots (window info sign-items)
+  "Return display slots using INFO and SIGN-ITEMS."
+  (let* ((window-lines (plist-get info :window-lines))
          (thumb-top (plist-get info :thumb-top))
          (thumb-size (plist-get info :thumb-size))
+         (candidates (and sign-items
+                          (scrollview--sign-row-candidates
+                           window info sign-items)))
          (slots (make-vector window-lines nil)))
     (dotimes (offset thumb-size)
       (let ((row (+ thumb-top offset)))
@@ -647,31 +742,32 @@ GROUPS may be nil, a symbol, or a list of symbols."
                       :bitmap 'filled-rectangle
                       :face 'scrollview-thumb-face
                       :help-echo "scrollview scrollbar")))))
-    (dolist (item sign-items)
-      (let* ((line (plist-get item :line))
-             (spec (plist-get item :spec))
-             (row (scrollview--line-to-row line track-lines buffer-lines))
-             (priority (scrollview--sign-spec-priority spec))
-             (order (scrollview--sign-spec-id spec))
-             (old (aref slots row)))
-        (when (scrollview--slot-better-p priority order old)
-          (let ((highlighted (and (<= thumb-top row)
-                                  (< row (+ thumb-top thumb-size)))))
-            (aset slots row
-                  (list :type 'sign
-                        :priority priority
-                        :order order
-                        :bitmap (scrollview--sign-spec-bitmap spec)
-                        :face (scrollview--sign-render-face
-                               (scrollview--sign-spec-face spec)
-                               highlighted)
-                        :line line
-                        :group (scrollview--sign-spec-group spec)
-                        :variant (scrollview--sign-spec-variant spec)
-                        :highlighted highlighted
-                        :help-echo (format "scrollview %s sign at line %d"
-                                           (scrollview--sign-spec-group spec)
-                                           line)))))))
+    (when candidates
+      (dotimes (row window-lines)
+        (when-let* ((item (aref candidates row))
+                    (line (scrollview--sign-item-line item)))
+          (let* ((spec (scrollview--sign-item-spec item))
+                 (priority (scrollview--sign-spec-priority spec))
+                 (order (scrollview--sign-spec-id spec))
+                 (old (aref slots row)))
+            (when (scrollview--slot-better-p priority order old)
+              (let ((highlighted (and (<= thumb-top row)
+                                      (< row (+ thumb-top thumb-size)))))
+                (aset slots row
+                      (list :type 'sign
+                            :priority priority
+                            :order order
+                            :bitmap (scrollview--sign-spec-bitmap spec)
+                            :face (scrollview--sign-render-face
+                                   (scrollview--sign-spec-face spec)
+                                   highlighted)
+                            :line line
+                            :group (scrollview--sign-spec-group spec)
+                            :variant (scrollview--sign-spec-variant spec)
+                            :highlighted highlighted
+                            :help-echo (format "scrollview %s sign at line %d"
+                                               (scrollview--sign-spec-group spec)
+                                               line)))))))))
     slots))
 
 (defun scrollview--overlay-position-at-point ()
@@ -1010,7 +1106,7 @@ relevant has changed since the last refresh."
 
 (defun scrollview--event-row (position)
   "Return zero-based window row for mouse POSITION."
-  (when-let ((row (cdr-safe (posn-col-row position))))
+  (when-let* ((row (cdr-safe (posn-col-row position))))
     (and (numberp row) (max 0 (truncate row)))))
 
 (defun scrollview--clickable-info (window)
@@ -1070,7 +1166,7 @@ When SET-START is non-nil, also make LINE the window start."
         lines)
     (when (scrollview--window-eligible-p window)
       (dolist (item (scrollview--collect-sign-items window groups))
-        (push (plist-get item :line) lines)))
+        (push (scrollview--sign-item-line item) lines)))
     (scrollview--dedupe-sorted-lines lines)))
 
 (defun scrollview--goto-sign-line (location &optional count groups)

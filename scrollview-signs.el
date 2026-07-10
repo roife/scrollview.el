@@ -22,6 +22,7 @@
 (declare-function smerge-find-conflict "smerge-mode" (&optional limit))
 (declare-function hl-todo--search "hl-todo" (&optional regexp bound backward))
 (declare-function diff-hl-changes "diff-hl" ())
+(declare-function diff-hl-changes-from-buffer "diff-hl" (buf))
 (declare-function flyspell-overlay-p "flyspell" (overlay))
 (declare-function compilation--ensure-parse "compile" (limit))
 (declare-function compilation--message->loc "compile" (message))
@@ -92,7 +93,7 @@
 
 (defun scrollview--after-isearch-update ()
   "Refresh search signs after the active isearch changes."
-  (if-let ((source (scrollview--active-isearch-source)))
+  (if-let* ((source (scrollview--active-isearch-source)))
       (pcase-let ((`(,pattern ,regexp) source))
         (unless (and (equal scrollview--last-search-pattern pattern)
                      (eq scrollview--last-search-regexp regexp))
@@ -123,7 +124,8 @@ decided by the presence of live isearch lazy highlight overlays."
   "Return buffer lines matching PATTERN.
 When REGEXP is non-nil, search with `re-search-forward'; otherwise search
 literally with `search-forward'."
-  (let (lines)
+  (let ((tracker (scrollview--make-line-tracker))
+        lines)
     (save-excursion
       (save-match-data
         (goto-char (point-min))
@@ -132,8 +134,9 @@ literally with `search-forward'."
               (while (if regexp
                          (re-search-forward pattern nil t)
                        (search-forward pattern nil t))
-                (let ((line (line-number-at-pos (match-beginning 0) t)))
-                  (unless (eq line (car lines))
+                (let ((line (scrollview--tracked-line-number
+                             (match-beginning 0) tracker)))
+                  (unless (and lines (= line (car lines)))
                     (push line lines)))
                 (when (= (match-beginning 0) (match-end 0))
                   (if (eobp)
@@ -144,7 +147,7 @@ literally with `search-forward'."
 
 (defun scrollview--collect-search-lines (_window)
   "Collect lines matching the current isearch highlight source."
-  (when-let ((source (scrollview--search-source)))
+  (when-let* ((source (scrollview--search-source)))
     (pcase-let ((`(,pattern ,regexp) source))
       (let ((tick (buffer-chars-modified-tick)))
         (if (and scrollview--search-cache
@@ -200,7 +203,7 @@ literally with `search-forward'."
            (let* ((level (scrollview--diagnostic-level
                           (flymake-diagnostic-type diag)))
                   (cell (assq level result)))
-             (when-let ((line (scrollview--flymake-diagnostic-line diag)))
+             (when-let* ((line (scrollview--flymake-diagnostic-line diag)))
                (setcdr cell (cons line (cdr cell)))))))
        (when (and (boundp 'flycheck-current-errors)
                   (fboundp 'flycheck-error-line)
@@ -208,7 +211,7 @@ literally with `search-forward'."
          (dolist (err (symbol-value 'flycheck-current-errors))
            (let ((level (scrollview--diagnostic-level
                          (flycheck-error-level err))))
-             (when-let ((line (flycheck-error-line err)))
+             (when-let* ((line (flycheck-error-line err)))
                (let ((cell (assq level result)))
                  (setcdr cell (cons line (cdr cell))))))))
        (mapcar (lambda (cell)
@@ -258,7 +261,7 @@ literally with `search-forward'."
 
 (defun scrollview--compilation-file-spec-name (file-spec)
   "Return absolute file name described by compilation FILE-SPEC."
-  (when-let ((file (car-safe file-spec)))
+  (when-let* ((file (car-safe file-spec)))
     (when (stringp file)
       (let ((directory (cond
                         ((stringp (cdr-safe file-spec))
@@ -299,7 +302,7 @@ literally with `search-forward'."
 (defun scrollview--compilation-message-line
     (message source-buffer source-file)
   "Return source line for compilation MESSAGE in SOURCE-BUFFER or SOURCE-FILE."
-  (when-let ((loc (compilation--message->loc message)))
+  (when-let* ((loc (compilation--message->loc message)))
     (scrollview--compilation-loc-line loc source-buffer source-file)))
 
 (defun scrollview--compilation-lines ()
@@ -320,8 +323,8 @@ literally with `search-forward'."
          (dolist (buffer (scrollview--compilation-buffers))
            (with-current-buffer buffer
              (dolist (message (scrollview--compilation-message-list))
-               (when-let ((line (scrollview--compilation-message-line
-                                  message source-buffer source-file)))
+               (when-let* ((line (scrollview--compilation-message-line
+                                   message source-buffer source-file)))
                  (let* ((level (scrollview--compilation-type-level
                                 (compilation--message->type message)))
                         (cell (assq level result)))
@@ -349,7 +352,7 @@ literally with `search-forward'."
   (let (patterns)
     (when (boundp 'highlight-symbol-keyword-alist)
       (dolist (entry highlight-symbol-keyword-alist)
-        (when-let ((pattern (car-safe entry)))
+        (when-let* ((pattern (car-safe entry)))
           (when (and (stringp pattern)
                      (not (string-empty-p pattern)))
             (cl-pushnew pattern patterns :test #'equal)))))
@@ -586,40 +589,63 @@ literally with `search-forward'."
         'keyword
       (intern name))))
 
-(defun scrollview--hl-todo-match-variant (match)
-  "Return the hl-todo variant whose configured keyword matches MATCH."
+(defun scrollview--hl-todo-variant-matchers ()
+  "Return precomputed regexp-to-variant matchers for hl-todo keywords."
   (cl-loop for (keyword . _) in (and (boundp 'hl-todo-keyword-faces)
                                      hl-todo-keyword-faces)
-           when (string-match-p (concat "\\`\\(?:" keyword "\\)\\'") match)
-           return (scrollview--hl-todo-keyword-variant keyword)))
+           collect (cons (concat "\\`\\(?:" keyword "\\)\\'")
+                         (scrollview--hl-todo-keyword-variant keyword))))
+
+(defun scrollview--hl-todo-match-variant (match &optional matchers)
+  "Return the hl-todo variant whose configured keyword matches MATCH."
+  (cl-loop for (regexp . variant) in (or matchers
+                                         (scrollview--hl-todo-variant-matchers))
+           when (string-match-p regexp match)
+           return variant))
 
 (defun scrollview--hl-todo-lines ()
   "Return hl-todo keyword lines grouped by variant."
-  (scrollview--cached-collector-value
-   'keywords
-   (list :tick (buffer-chars-modified-tick)
-         :keyword-faces (and (boundp 'hl-todo-keyword-faces)
-                             hl-todo-keyword-faces))
-   (lambda ()
-     (let (lines)
-       (when (scrollview--hl-todo-available-p)
-         (syntax-propertize (point-max))
+  (when (scrollview--hl-todo-available-p)
+    ;; Do this before taking the cache token: syntax-propertize can change the
+    ;; buffer tick even though it does not change user-visible text.
+    (syntax-propertize (point-max))
+    (scrollview--cached-collector-value
+     'keywords
+     (list :tick (buffer-chars-modified-tick)
+           :keyword-faces (and (boundp 'hl-todo-keyword-faces)
+                               hl-todo-keyword-faces))
+     (lambda ()
+       (let ((tracker (scrollview--make-line-tracker))
+             (matchers (scrollview--hl-todo-variant-matchers))
+             (variant-cache (make-hash-table :test #'equal))
+             lines)
          (save-excursion
            (save-match-data
              (goto-char (point-min))
              (while (hl-todo--search)
                (when-let* ((keyword (match-string-no-properties 2))
-                           (variant (scrollview--hl-todo-match-variant
-                                     keyword)))
-                 (let ((line (line-number-at-pos (match-beginning 1) t))
+                           (cached (gethash keyword variant-cache :missing))
+                           (variant
+                            (if (eq cached :missing)
+                                (let ((value
+                                       (scrollview--hl-todo-match-variant
+                                        keyword matchers)))
+                                  (puthash keyword (or value :none)
+                                           variant-cache)
+                                  value)
+                              (unless (eq cached :none) cached))))
+                 (let ((line (scrollview--tracked-line-number
+                              (match-beginning 1) tracker))
                        (cell (assq variant lines)))
                    (if cell
                        (setcdr cell (cons line (cdr cell)))
-                     (push (cons variant (list line)) lines))))))))
-       (mapcar (lambda (entry)
-                 (cons (car entry)
-                       (scrollview--dedupe-sorted-lines (cdr entry))))
-               lines)))))
+                     (push (cons variant (list line)) lines)))))))
+         (mapcar (lambda (entry)
+                   (cons (car entry)
+                         ;; The scan is monotonic, so reversing and removing
+                         ;; adjacent duplicates is linear and needs no sort.
+                         (seq-uniq (nreverse (cdr entry)) #'=)))
+                 lines))))))
 
 (defun scrollview--collect-keyword-lines (variant &rest _)
   "Collect keyword lines for VARIANT."
@@ -663,7 +689,13 @@ literally with `search-forward'."
   (when (scrollview--diff-hl-available-p)
     (let ((diff-hl-update-async nil))
       (cl-loop for (_ . value) in (diff-hl-changes)
-               when (listp value)
+               ;; Recent diff-hl versions return a diff buffer name for
+               ;; ordinary files, while added files may still return hunks
+               ;; inline.
+               if (stringp value)
+               append (when-let* ((buffer (get-buffer value)))
+                        (diff-hl-changes-from-buffer buffer))
+               else if (listp value)
                append value))))
 
 (defun scrollview--vc-lines ()

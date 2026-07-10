@@ -47,6 +47,7 @@
   (setq scrollview--sign-groups (make-hash-table :test #'eq))
   (setq scrollview--sign-specs (make-hash-table :test #'eql))
   (setq scrollview--window-sign-cache (make-hash-table :test #'eq))
+  (setq scrollview--window-sign-row-cache (make-hash-table :test #'eq))
   (setq scrollview--sign-cache-generation 0)
   (setq scrollview--sign-render-face-cache (make-hash-table :test #'equal))
   (setq scrollview--thumb-face-state nil)
@@ -205,6 +206,16 @@ When STRING is non-nil, include it as the clicked string object."
     (goto-char (point-max))
     (insert "\nthree")
     (should (= (scrollview--line-count) 3))))
+
+(ert-deftest scrollview-search-scan-keeps-absolute-lines-when-narrowed ()
+  (with-temp-buffer
+    (insert "skip\nskip\nhit\nskip\nhit\nskip")
+    (goto-char (point-min))
+    (forward-line 2)
+    (let ((start (point)))
+      (forward-line 3)
+      (narrow-to-region start (point)))
+    (should (equal (scrollview--scan-search-lines "hit" nil) '(3 5)))))
 
 (ert-deftest scrollview-diagnostics-collector-reuses-one-scan-for-all-levels ()
   (with-temp-buffer
@@ -944,6 +955,33 @@ When STRING is non-nil, include it as the clicked string object."
           (should (eq (plist-get (aref slots 3) :type) 'scrollbar)))
       (scrollview-test--restore-face-state 'scrollview-thumb-face old-thumb))))
 
+(ert-deftest scrollview-sign-row-candidates-reuse-mapping ()
+  (scrollview-test--reset-state)
+  (let* ((spec (scrollview--make-sign-spec
+                :id 1 :group 'test :priority 10
+                :bitmap 'scrollview-search-bitmap
+                :face 'scrollview-search-face
+                :collector #'ignore))
+         (items (list (cons 2 spec) (cons 9 spec)))
+         (info '(:window-lines 5 :track-lines 5 :buffer-lines 10
+                 :thumb-top 0 :thumb-size 1))
+         (window 'scrollview-test-window)
+         (calls 0)
+         (original (symbol-function 'scrollview--line-to-row)))
+    (cl-letf (((symbol-function 'scrollview--line-to-row)
+               (lambda (&rest args)
+                 (cl-incf calls)
+                 (apply original args))))
+      (scrollview--build-slots window info items)
+      (should (= calls 2))
+      (scrollview--build-slots window info items)
+      (should (= calls 2))
+      (scrollview--build-slots
+       window '(:window-lines 6 :track-lines 6 :buffer-lines 10
+                :thumb-top 0 :thumb-size 1)
+       items)
+      (should (= calls 4)))))
+
 (ert-deftest scrollview-sign-outside-scrollbar-has-no-background ()
   (let* ((spec (scrollview--make-sign-spec
                 :id 1 :group 'test :variant nil :priority 10
@@ -1389,6 +1427,26 @@ When STRING is non-nil, include it as the clicked string object."
         (scrollview-refresh (selected-window))
         (should (= calls 2))))))
 
+(ert-deftest scrollview-sign-cache-uses-post-collection-buffer-tick ()
+  (scrollview-test--reset-state)
+  (scrollview-test--with-displayed-buffer
+    (insert "text")
+    (let ((scrollview-signs-on-startup nil)
+          (scrollview-line-limit -1)
+          (scrollview-byte-limit -1)
+          (calls 0))
+      (scrollview-register-sign-group 'scrollview-test-properties t)
+      (scrollview-register-sign-spec
+       :group 'scrollview-test-properties
+       :collector (lambda (_window)
+                    (cl-incf calls)
+                    (put-text-property (point-min) (point-max)
+                                       'scrollview-test-property t)
+                    '(1)))
+      (scrollview--collect-sign-items-cached (selected-window))
+      (scrollview--collect-sign-items-cached (selected-window))
+      (should (= calls 1)))))
+
 (ert-deftest scrollview-refresh-reuses-overlay-objects ()
   (scrollview-test--reset-state)
   (scrollview-test--with-displayed-buffer
@@ -1718,6 +1776,30 @@ When STRING is non-nil, include it as the clicked string object."
       (should (equal (scrollview--collect-vc-lines 'add) '(2 3)))
       (should (equal (scrollview--collect-vc-lines 'change) '(4)))
       (should (equal (scrollview--collect-vc-lines 'delete) '(5))))))
+
+(ert-deftest scrollview-vc-collector-parses-diff-hl-buffer ()
+  (scrollview-test--reset-state)
+  (let ((diff-buffer (generate-new-buffer " *scrollview-diff-hl*"))
+        parsed-buffer)
+    (unwind-protect
+        (with-temp-buffer
+          (insert "one\ntwo\nthree\nfour\nfive\n")
+          (cl-letf (((symbol-function 'scrollview--diff-hl-available-p)
+                     (lambda () t))
+                    ((symbol-function 'diff-hl-changes)
+                     (lambda ()
+                       `((:working . ,(buffer-name diff-buffer)))))
+                    ((symbol-function 'diff-hl-changes-from-buffer)
+                     (lambda (buffer)
+                       (setq parsed-buffer buffer)
+                       '((2 2 0 insert)
+                         (4 1 1 change)
+                         (5 0 2 delete)))))
+            (should (equal (scrollview--collect-vc-lines 'add) '(2 3)))
+            (should (equal (scrollview--collect-vc-lines 'change) '(4)))
+            (should (equal (scrollview--collect-vc-lines 'delete) '(5)))
+            (should (eq parsed-buffer diff-buffer))))
+      (kill-buffer diff-buffer))))
 
 (provide 'scrollview-test)
 
