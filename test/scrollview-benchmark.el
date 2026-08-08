@@ -72,6 +72,7 @@
   (setq scrollview--sign-specs (make-hash-table :test #'eql))
   (setq scrollview--window-sign-cache (make-hash-table :test #'eq))
   (setq scrollview--window-sign-row-cache (make-hash-table :test #'eq))
+  (setq scrollview--window-render-state (make-hash-table :test #'eq))
   (setq scrollview--sign-cache-generation 0)
   (setq scrollview--sign-render-face-cache (make-hash-table :test #'equal))
   (setq scrollview--thumb-face-state nil)
@@ -263,7 +264,7 @@
   (scrollview-refresh (selected-window)))
 
 (defun scrollview-benchmark--scroll-refresh ()
-  "Benchmark synchronous scroll refresh."
+  "Benchmark a scroll-position refresh."
   (let ((window (selected-window)))
     (set-window-start
      window
@@ -272,7 +273,7 @@
        (forward-line 10)
        (point))
      t)
-    (scrollview--after-window-scroll window nil)))
+    (scrollview--refresh-window window)))
 
 (defun scrollview-benchmark--collector-refresh ()
   "Benchmark a full refresh with synthetic signs enabled."

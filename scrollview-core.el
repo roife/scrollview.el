@@ -112,10 +112,8 @@ between START values instead of rescanning from `point-min'.")
 
 (defvar scrollview--window-render-state (make-hash-table :test #'eq)
   "Hash table mapping windows to the last rendered scroll signature.
-A signature is (BUFFER TICK WINDOW-START WINDOW-END LINE-HEIGHT
-SIGN-GENERATION).  When `scrollview--after-window-scroll' fires with a
-matching signature the previous overlays are still valid and we skip the
-rebuild.")
+A signature is (BUFFER TICK WINDOW-START LINE-HEIGHT).  Equal signatures let
+scheduled refreshes reuse the existing overlays.")
 
 (defvar scrollview-mode-map
   (let ((map (make-sparse-keymap)))
@@ -388,7 +386,8 @@ overlays."
              scrollview--window-sign-cache)
     (dolist (window windows)
       (remhash window scrollview--window-sign-cache)
-      (remhash window scrollview--window-sign-row-cache))))
+      (remhash window scrollview--window-sign-row-cache)
+      (remhash window scrollview--window-render-state))))
 
 
 ;;; Position calculations
@@ -661,32 +660,13 @@ GROUPS may be nil, a symbol, or a list of symbols."
                  scrollview--window-sign-cache)
         items))))
 
-(defun scrollview--slot-better-p (priority order old)
-  "Return non-nil if PRIORITY and ORDER should replace OLD."
-  (or (null old)
-      (> priority (plist-get old :priority))
-      (and (= priority (plist-get old :priority))
-           (< order (plist-get old :order)))))
-
-(defun scrollview--sign-item-line (item)
-  "Return ITEM's line, accepting compact and legacy plist forms."
-  (if (integerp (car-safe item))
-      (car item)
-    (plist-get item :line)))
-
-(defun scrollview--sign-item-spec (item)
-  "Return ITEM's sign spec, accepting compact and legacy plist forms."
-  (if (integerp (car-safe item))
-      (cdr item)
-    (plist-get item :spec)))
-
 (defun scrollview--sign-item-better-p (item old)
   "Return non-nil when sign ITEM should replace OLD on a display row."
-  (let* ((spec (scrollview--sign-item-spec item))
+  (let* ((spec (cdr item))
          (priority (scrollview--sign-spec-priority spec))
          (order (scrollview--sign-spec-id spec)))
     (or (null old)
-        (let ((old-spec (scrollview--sign-item-spec old)))
+        (let ((old-spec (cdr old)))
           (or (> priority (scrollview--sign-spec-priority old-spec))
               (and (= priority (scrollview--sign-spec-priority old-spec))
                    (< order (scrollview--sign-spec-id old-spec))))))))
@@ -698,7 +678,7 @@ unchanged.  A cached sign list keeps its identity across scroll refreshes."
   (let* ((window-lines (plist-get info :window-lines))
          (track-lines (or (plist-get info :track-lines) window-lines))
          (buffer-lines (plist-get info :buffer-lines))
-         (entry (and window (gethash window scrollview--window-sign-row-cache))))
+         (entry (gethash window scrollview--window-sign-row-cache)))
     (if (and entry
              (eq sign-items (plist-get entry :sign-items))
              (= window-lines (plist-get entry :window-lines))
@@ -708,19 +688,18 @@ unchanged.  A cached sign list keeps its identity across scroll refreshes."
       (let ((candidates (make-vector window-lines nil)))
         (dolist (item sign-items)
           (let* ((row (scrollview--line-to-row
-                       (scrollview--sign-item-line item)
+                       (car item)
                        track-lines buffer-lines))
                  (old (aref candidates row)))
             (when (scrollview--sign-item-better-p item old)
               (aset candidates row item))))
-        (when window
-          (puthash window
-                   (list :sign-items sign-items
-                         :window-lines window-lines
-                         :track-lines track-lines
-                         :buffer-lines buffer-lines
-                         :candidates candidates)
-                   scrollview--window-sign-row-cache))
+        (puthash window
+                 (list :sign-items sign-items
+                       :window-lines window-lines
+                       :track-lines track-lines
+                       :buffer-lines buffer-lines
+                       :candidates candidates)
+                 scrollview--window-sign-row-cache)
         candidates))))
 
 (defun scrollview--build-slots (window info sign-items)
@@ -737,37 +716,28 @@ unchanged.  A cached sign list keeps its identity across scroll refreshes."
         (when (< row window-lines)
           (aset slots row
                 (list :type 'scrollbar
-                      :priority scrollview--scrollbar-priority
-                      :order most-positive-fixnum
                       :bitmap 'filled-rectangle
-                      :face 'scrollview-thumb-face
-                      :help-echo "scrollview scrollbar")))))
+                      :face 'scrollview-thumb-face)))))
     (when candidates
       (dotimes (row window-lines)
         (when-let* ((item (aref candidates row))
-                    (line (scrollview--sign-item-line item)))
-          (let* ((spec (scrollview--sign-item-spec item))
+                    (line (car item)))
+          (let* ((spec (cdr item))
                  (priority (scrollview--sign-spec-priority spec))
-                 (order (scrollview--sign-spec-id spec))
                  (old (aref slots row)))
-            (when (scrollview--slot-better-p priority order old)
+            (when (or (null old)
+                      (>= priority scrollview--scrollbar-priority))
               (let ((highlighted (and (<= thumb-top row)
                                       (< row (+ thumb-top thumb-size)))))
                 (aset slots row
                       (list :type 'sign
-                            :priority priority
-                            :order order
                             :bitmap (scrollview--sign-spec-bitmap spec)
                             :face (scrollview--sign-render-face
                                    (scrollview--sign-spec-face spec)
                                    highlighted)
                             :line line
                             :group (scrollview--sign-spec-group spec)
-                            :variant (scrollview--sign-spec-variant spec)
-                            :highlighted highlighted
-                            :help-echo (format "scrollview %s sign at line %d"
-                                               (scrollview--sign-spec-group spec)
-                                               line)))))))))
+                            :variant (scrollview--sign-spec-variant spec)))))))))
     slots))
 
 (defun scrollview--overlay-position-at-point ()
@@ -825,18 +795,6 @@ unchanged.  A cached sign list keeps its identity across scroll refreshes."
          'scrollview-target-type target-type
          properties))
 
-(defun scrollview--overlay-render-state (slot target-line)
-  "Return the rendered overlay state for SLOT and TARGET-LINE."
-  (list :side (scrollview--overlay-display-side)
-        :bitmap (plist-get slot :bitmap)
-        :margin-glyph (and (scrollview--margin-area-p)
-                           (scrollview--margin-glyph slot))
-        :face (plist-get slot :face)
-        :target-line target-line
-        :target-type (plist-get slot :type)
-        :help-echo (plist-get slot :help-echo)
-        :priority scrollview--overlay-priority))
-
 (defun scrollview--overlay-after-string (slot target-line)
   "Return the after-string for SLOT and TARGET-LINE."
   (let* ((face (plist-get slot :face))
@@ -853,25 +811,44 @@ unchanged.  A cached sign list keeps its identity across scroll refreshes."
      "." face target-line target-type
      'display display)))
 
-(defun scrollview--update-overlay-at-point (overlay window row slot target-line)
-  "Move and update OVERLAY for WINDOW, ROW, SLOT, and TARGET-LINE."
-  (let ((pos (scrollview--overlay-position-at-point))
-        (state (scrollview--overlay-render-state slot target-line)))
-    (unless (and (eq (overlay-buffer overlay) (current-buffer))
-                 (= (overlay-start overlay) pos)
-                 (= (overlay-end overlay) pos))
+(defun scrollview--update-overlay-at-point
+    (overlay window row slot target-line side margin-p)
+  "Move and update OVERLAY for WINDOW, ROW, SLOT, and TARGET-LINE.
+SIDE is the display area and MARGIN-P says whether it is a margin."
+  (let* ((pos (scrollview--overlay-position-at-point))
+         (bitmap (plist-get slot :bitmap))
+         (face (plist-get slot :face))
+         (type (plist-get slot :type))
+         (group (plist-get slot :group))
+         (margin-glyph (and margin-p (scrollview--margin-glyph slot)))
+         (old-state (overlay-get overlay 'scrollview-render-state)))
+    (unless (= (overlay-start overlay) pos)
       (move-overlay overlay pos pos (current-buffer)))
-    (unless (equal state (overlay-get overlay 'scrollview-render-state))
-      (overlay-put overlay 'after-string
-                   (scrollview--overlay-after-string slot target-line))
-      (overlay-put overlay 'window window)
-      (overlay-put overlay 'priority scrollview--overlay-priority)
-      (overlay-put overlay 'scrollview t)
-      (overlay-put overlay 'scrollview-target-line target-line)
-      (overlay-put overlay 'scrollview-target-type (plist-get slot :type))
-      (overlay-put overlay 'help-echo (plist-get slot :help-echo))
-      (overlay-put overlay 'scrollview-render-state state))
-    (overlay-put overlay 'scrollview-row row)
+    (unless (and old-state
+                 (eq (aref old-state 0) side)
+                 (eq (aref old-state 1) bitmap)
+                 (equal (aref old-state 2) margin-glyph)
+                 (equal (aref old-state 3) face)
+                 (eql (aref old-state 4) target-line)
+                 (eq (aref old-state 5) type)
+                 (eq (aref old-state 6) group))
+      (let ((state (vector side bitmap margin-glyph face
+                           target-line type group)))
+        (overlay-put overlay 'after-string
+                     (scrollview--overlay-after-string slot target-line))
+        (overlay-put overlay 'window window)
+        (overlay-put overlay 'priority scrollview--overlay-priority)
+        (overlay-put overlay 'scrollview t)
+        (overlay-put overlay 'scrollview-target-line target-line)
+        (overlay-put overlay 'scrollview-target-type type)
+        (overlay-put overlay 'help-echo
+                     (if (eq type 'sign)
+                         (format "scrollview %s sign at line %d"
+                                 group target-line)
+                       "scrollview scrollbar"))
+        (overlay-put overlay 'scrollview-render-state state)))
+    (unless (eql row (overlay-get overlay 'scrollview-row))
+      (overlay-put overlay 'scrollview-row row))
     overlay))
 
 (defun scrollview--target-line-for-row (slot row info)
@@ -918,99 +895,79 @@ Stale overlays are deleted while building the return value."
   "Return a signature describing WINDOW's current render-relevant state.
 Two equal signatures mean the previously rendered overlays are still
 correct."
-  (when (window-live-p window)
-    (let ((buffer (window-buffer window)))
-      (with-current-buffer buffer
-        (list buffer
-              (buffer-chars-modified-tick)
-              (window-start window)
-              (window-end window t)
-              (scrollview--window-line-height window)
-              scrollview--sign-cache-generation
-              ;; Per-buffer collector states that drive collector caches —
-              ;; if these tick we cannot reuse the prior render even when
-              ;; window-start is unchanged.
-              scrollview--spell-state-generation
-              scrollview--diagnostic-state-generation)))))
+  (let ((buffer (window-buffer window)))
+    (with-current-buffer buffer
+      (list buffer
+            (buffer-chars-modified-tick)
+            (window-start window)
+            (scrollview--window-line-height window)))))
 
-(defun scrollview--invalidate-render-state (&optional window)
-  "Drop cached render signatures.
-With WINDOW non-nil, only forget that one window."
-  (if window
-      (remhash window scrollview--window-render-state)
-    (clrhash scrollview--window-render-state)))
-
-(defun scrollview--refresh-window (window)
-  "Refresh scrollview overlays for WINDOW.
-Sign items come from the token-keyed cache, which self-invalidates when
-the buffer changes."
+(defun scrollview--refresh-window (window &optional force)
+  "Refresh WINDOW when FORCE is non-nil or its render state changed."
   (if (scrollview--window-eligible-p window)
-      (let* ((info (scrollview--position-info window))
-             (sign-items (scrollview--collect-sign-items-cached window)))
-        (if (scrollview--should-render-p info sign-items)
-            (let ((slots (scrollview--build-slots window info sign-items))
-                  overlays)
-              (scrollview--prepare-window-display-area window)
-              (pcase-let ((`(,by-row ,spare)
-                           (scrollview--current-window-overlays window)))
-                (with-selected-window window
-                  (save-excursion
-                    (goto-char (window-start window))
-                    (cl-loop with current-row = 0
-                             for row from 0 below (length slots)
-                             for slot = (aref slots row)
-                             do (when (< current-row row)
-                                  (vertical-motion (- row current-row))
-                                  (setq current-row row))
-                             when slot
-                             do (let* ((target-line
-                                        (scrollview--target-line-for-row
-                                         slot row info))
-                                       (same-row-overlay (gethash row by-row))
-                                       (overlay (or same-row-overlay
-                                                    (pop spare)
-                                                    (make-overlay
-                                                     (point) (point)))))
-                                  (when same-row-overlay
-                                    (remhash row by-row))
-                                  (push (scrollview--update-overlay-at-point
-                                         overlay window row slot target-line)
-                                        overlays)))))
-                (scrollview--delete-unused-overlays by-row spare)
-                (puthash window overlays scrollview--window-overlays)))
-          (scrollview--delete-window-overlays window))
-        ;; Stamp the render signature so the scroll fast-path can detect
-        ;; unchanged-state fires and skip the rebuild entirely.
-        (puthash window (scrollview--render-signature window)
-                 scrollview--window-render-state))
+      (when (or force
+                (not (equal (scrollview--render-signature window)
+                            (gethash window scrollview--window-render-state))))
+        (let* ((info (scrollview--position-info window))
+               (sign-items (scrollview--collect-sign-items-cached window)))
+          (if (scrollview--should-render-p info sign-items)
+              (let ((slots (scrollview--build-slots window info sign-items))
+                    overlays)
+                (scrollview--prepare-window-display-area window)
+                (pcase-let ((`(,by-row ,spare)
+                             (scrollview--current-window-overlays window)))
+                  (with-selected-window window
+                    (let ((side (scrollview--overlay-display-side))
+                          (margin-p (scrollview--margin-area-p)))
+                      (save-excursion
+                        (goto-char (window-start window))
+                        (cl-loop with current-row = 0
+                                 for row from 0 below (length slots)
+                                 for slot = (aref slots row)
+                                 do (when (< current-row row)
+                                      (vertical-motion (- row current-row))
+                                      (setq current-row row))
+                                 when slot
+                                 do (let* ((target-line
+                                            (scrollview--target-line-for-row
+                                             slot row info))
+                                           (same-row-overlay
+                                            (gethash row by-row))
+                                           (overlay (or same-row-overlay
+                                                        (pop spare)
+                                                        (make-overlay
+                                                         (point) (point)))))
+                                      (when same-row-overlay
+                                        (remhash row by-row))
+                                      (push
+                                       (scrollview--update-overlay-at-point
+                                        overlay window row slot target-line
+                                        side margin-p)
+                                       overlays))))))
+                  (scrollview--delete-unused-overlays by-row spare)
+                  (puthash window overlays scrollview--window-overlays)))
+            (scrollview--delete-window-overlays window))
+          (puthash window (scrollview--render-signature window)
+                   scrollview--window-render-state)))
     (scrollview--delete-window-overlays window)))
 
-(defun scrollview--refresh-now (&optional window scroll)
+(defun scrollview--prepare-refresh ()
+  "Synchronize global state before refreshing windows."
+  (scrollview--sync-faces)
+  (scrollview--initialize-builtins)
+  (scrollview--cleanup-dead-windows))
+
+(defun scrollview--refresh-now (&optional window)
   "Refresh scrollview overlays now.
-When WINDOW is non-nil, refresh only that window.  When SCROLL is non-nil
-this is a scroll-driven refresh, which skips the global setup work
-\(face sync, builtin registration, dead-window cleanup) that does not
-depend on scroll position and short-circuits when WINDOW's render
-signature is unchanged from the previous refresh."
+When WINDOW is non-nil, refresh only that window."
   (unless scrollview--refreshing
     (let ((scrollview--refreshing t)
           (inhibit-redisplay t))
-      (cond
-       ((and scroll window)
-        (let ((signature (scrollview--render-signature window))
-              (previous (gethash window scrollview--window-render-state)))
-          (unless (and previous (equal signature previous))
-            (scrollview--refresh-window window))))
-       (t
-        (scrollview--sync-faces)
-        (scrollview--initialize-builtins)
-        (scrollview--cleanup-dead-windows)
-        (if window
-            (scrollview--refresh-window window)
-          (dolist (window (scrollview--all-windows))
-            (if (scrollview--window-eligible-p window)
-                (scrollview--refresh-window window)
-              (scrollview--delete-window-overlays window)))))))))
+      (scrollview--prepare-refresh)
+      (if window
+          (scrollview--refresh-window window t)
+        (dolist (window (scrollview--all-windows))
+          (scrollview--refresh-window window t))))))
 
 ;;;###autoload
 (defun scrollview-refresh (&optional window)
@@ -1026,12 +983,15 @@ eligible windows."
 (defun scrollview--flush-refresh ()
   "Run a pending debounced refresh."
   (setq scrollview--refresh-timer nil)
-  (if scrollview--pending-all
-      (scrollview-refresh)
-    (maphash (lambda (window _)
-               (when (window-live-p window)
-                 (scrollview-refresh window)))
-             scrollview--pending-windows))
+  (let ((scrollview--refreshing t)
+        (inhibit-redisplay t))
+    (scrollview--prepare-refresh)
+    (if scrollview--pending-all
+        (dolist (window (scrollview--all-windows))
+          (scrollview--refresh-window window))
+      (maphash (lambda (window _)
+                 (scrollview--refresh-window window))
+               scrollview--pending-windows)))
   (setq scrollview--pending-all nil)
   (clrhash scrollview--pending-windows))
 
@@ -1051,16 +1011,8 @@ eligible windows."
     (scrollview--schedule-refresh window)))
 
 (defun scrollview--after-window-scroll (window _start)
-  "Refresh WINDOW immediately after it scrolls.
-Keeping this synchronous prevents stale scrollview overlays from riding along
-with the text for one redisplay frame before the debounced refresh corrects
-them.
-
-Performance: `window-scroll-functions' fires on every redisplay step during
-scrolling, so this delegates to `scrollview--refresh-now' with SCROLL
-non-nil, which skips the global setup work and short-circuits when nothing
-relevant has changed since the last refresh."
-  (scrollview--refresh-now window 'scroll))
+  "Queue a refresh for WINDOW after it scrolls."
+  (scrollview--schedule-refresh window))
 
 (defun scrollview--after-change (&rest _)
   "Refresh windows showing the current buffer after buffer changes."
@@ -1166,7 +1118,7 @@ When SET-START is non-nil, also make LINE the window start."
         lines)
     (when (scrollview--window-eligible-p window)
       (dolist (item (scrollview--collect-sign-items window groups))
-        (push (scrollview--sign-item-line item) lines)))
+        (push (car item) lines)))
     (scrollview--dedupe-sorted-lines lines)))
 
 (defun scrollview--goto-sign-line (location &optional count groups)

@@ -48,6 +48,7 @@
   (setq scrollview--sign-specs (make-hash-table :test #'eql))
   (setq scrollview--window-sign-cache (make-hash-table :test #'eq))
   (setq scrollview--window-sign-row-cache (make-hash-table :test #'eq))
+  (setq scrollview--window-render-state (make-hash-table :test #'eq))
   (setq scrollview--sign-cache-generation 0)
   (setq scrollview--sign-render-face-cache (make-hash-table :test #'equal))
   (setq scrollview--thumb-face-state nil)
@@ -942,11 +943,9 @@ When STRING is non-nil, include it as the clicked string object."
           (setq slots
                 (scrollview--build-slots
                  nil info
-                 (list (list :line 3 :spec high)
-                       (list :line 4 :spec low))))
+                 (list (cons 3 high) (cons 4 low))))
           (should (eq (plist-get (aref slots 0) :type) 'scrollbar))
           (should (eq (plist-get (aref slots 2) :type) 'sign))
-          (should (plist-get (aref slots 2) :highlighted))
           (should (eq (plist-get (aref slots 2) :bitmap)
                       'scrollview-search-bitmap))
           (should (equal (face-attribute (plist-get (aref slots 2) :face)
@@ -992,9 +991,8 @@ When STRING is non-nil, include it as the clicked string object."
                  :thumb-top 0 :thumb-size 1))
          (slots (scrollview--build-slots
                  nil info
-                 (list (list :line 5 :spec spec)))))
+                 (list (cons 5 spec)))))
     (should (eq (plist-get (aref slots 4) :type) 'sign))
-    (should-not (plist-get (aref slots 4) :highlighted))
     (should (eq (face-attribute (plist-get (aref slots 4) :face)
                                 :background nil t)
                 'unspecified))))
@@ -1383,16 +1381,39 @@ When STRING is non-nil, include it as the clicked string object."
         (scrollview-test--restore-face-state 'scrollview-thumb-face
                                              old-thumb)))))
 
-(ert-deftest scrollview-scroll-hook-refreshes-immediately ()
+(ert-deftest scrollview-scroll-hook-defers-and-coalesces ()
   (scrollview-test--reset-state)
-  (let ((window (selected-window))
-        called)
-    (cl-letf (((symbol-function 'scrollview--refresh-now)
-               (lambda (&optional refreshed-window scroll)
-                 (setq called (list refreshed-window scroll)))))
+  (let ((window (selected-window)))
+    (dotimes (_ 20)
       (scrollview--after-window-scroll window nil))
-    (should (equal called (list window 'scroll)))
-    (should-not (timerp scrollview--refresh-timer))))
+    (should (gethash window scrollview--pending-windows))
+    (should (= (hash-table-count scrollview--pending-windows) 1))
+    (should (timerp scrollview--refresh-timer))))
+
+(ert-deftest scrollview-pending-refresh-skips-current-render-state ()
+  (scrollview-test--reset-state)
+  (scrollview-test--with-displayed-buffer
+    (scrollview-test--insert-lines 200)
+    (let ((scrollview-signs-on-startup nil)
+          (scrollview-line-limit -1)
+          (scrollview-byte-limit -1)
+          (refreshes 0))
+      (cl-letf (((symbol-function 'scrollview--fringe-available-p)
+                 (lambda (_window) t)))
+        (setq-local scrollview-mode t)
+        (scrollview-refresh (selected-window))
+        (let ((original (symbol-function 'scrollview--position-info)))
+          (cl-letf (((symbol-function 'scrollview--position-info)
+                     (lambda (window)
+                       (cl-incf refreshes)
+                       (funcall original window))))
+            (puthash (selected-window) t scrollview--pending-windows)
+            (scrollview--flush-refresh)
+            (should (= refreshes 0))
+            (scrollview--invalidate-buffer-sign-cache)
+            (puthash (selected-window) t scrollview--pending-windows)
+            (scrollview--flush-refresh)
+            (should (= refreshes 1))))))))
 
 (ert-deftest scrollview-scroll-refresh-reuses-sign-cache ()
   (scrollview-test--reset-state)
@@ -1419,7 +1440,15 @@ When STRING is non-nil, include it as the clicked string object."
         (scrollview-mode 1)
         (scrollview-refresh (selected-window))
         (should (= calls 1))
-        (scrollview--after-window-scroll (selected-window) nil)
+        (let ((window (selected-window)))
+          (set-window-start
+           window
+           (save-excursion
+             (goto-char (window-start window))
+             (forward-line 10)
+             (point))
+           t)
+          (scrollview--refresh-window window))
         (should (= calls 1))
         (scrollview-refresh (selected-window))
         (should (= calls 1))
@@ -1466,7 +1495,15 @@ When STRING is non-nil, include it as the clicked string object."
                          (gethash (selected-window)
                                   scrollview--window-overlays))))
           (should overlays)
-          (scrollview--after-window-scroll (selected-window) nil)
+          (let ((window (selected-window)))
+            (set-window-start
+             window
+             (save-excursion
+               (goto-char (window-start window))
+               (forward-line 10)
+               (point))
+             t)
+            (scrollview--refresh-window window))
           (should (cl-every #'eq overlays
                             (gethash (selected-window)
                                      scrollview--window-overlays))))))))
@@ -1498,7 +1535,7 @@ When STRING is non-nil, include it as the clicked string object."
         (should (= calls 1))
         (goto-char (point-max))
         (insert "\nnew")
-        (scrollview--after-window-scroll (selected-window) nil)
+        (scrollview--refresh-window (selected-window))
         (should (= calls 2))))))
 
 (ert-deftest scrollview-search-collector-follows-isearch-highlights ()
