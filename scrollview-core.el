@@ -310,6 +310,58 @@ overlays."
   (and scrollview-excluded-modes
        (apply #'derived-mode-p scrollview-excluded-modes)))
 
+(defun scrollview--multiline-display-replacement-p (window)
+  "Return non-nil when WINDOW contains a multiline display replacement.
+A string-valued `display' overlay containing newlines decouples visual rows
+from buffer lines.  In particular, a whole-buffer replacement can make
+redisplay repeatedly adjust `window-start'.  Refreshing scrollview from
+`window-scroll-functions' in that state feeds those adjustments back into
+redisplay and can keep Emacs in an infinite redisplay loop."
+  (when (window-live-p window)
+    (with-current-buffer (window-buffer window)
+      (when (< (point-min) (point-max))
+        (let* ((last-position (1- (point-max)))
+               (positions
+                (delete-dups
+                 (list (min last-position
+                            (max (point-min) (window-start window)))
+                       (min last-position
+                            (max (point-min) (window-point window)))))))
+          (cl-some
+           (lambda (position)
+             (cl-some
+              (lambda (overlay)
+                (when-let* ((display (overlay-get overlay 'display)))
+                  (and (stringp display)
+                       (string-search "\n" display))))
+              (overlays-at position)))
+           positions))))))
+
+(defun scrollview--tall-image-display-p (window)
+  "Return non-nil when WINDOW's buffer contains an explicitly tall image.
+Scrollview maps fringe rows to buffer screen lines.  An image whose declared
+height is several text rows still occupies one screen line, so multiple
+scrollview overlays can collapse onto the same buffer position and make
+redisplay unstable.  Treat an image taller than two default text rows as an
+unsupported display layout."
+  (when (window-live-p window)
+    (with-current-buffer (window-buffer window)
+      (let ((position (point-min))
+            (limit (point-max))
+            (max-height (* 2 (window-default-font-height window)))
+            found)
+        (while (and (< position limit) (not found))
+          (let* ((display (get-text-property position 'display))
+                 (height (and (eq (car-safe display) 'image)
+                              (plist-get (cdr display) :height))))
+            (when (and (numberp height) (> height max-height))
+              (setq found t)))
+          (unless found
+            (setq position
+                  (next-single-property-change
+                   position 'display nil limit))))
+        found))))
+
 (defun scrollview--window-eligible-p (window)
   "Return non-nil if WINDOW can display scrollview."
   (and (window-live-p window)
@@ -317,6 +369,8 @@ overlays."
        (or (not scrollview-current-window-only)
            (eq window (selected-window)))
        (scrollview--display-area-available-p window)
+       (not (scrollview--multiline-display-replacement-p window))
+       (not (scrollview--tall-image-display-p window))
        (with-current-buffer (window-buffer window)
          (and scrollview-mode
               (not (minibufferp))
@@ -1013,7 +1067,10 @@ eligible windows."
 
 (defun scrollview--after-window-scroll (window _start)
   "Queue a refresh for WINDOW after it scrolls."
-  (scrollview--schedule-refresh window))
+  (unless (or scrollview--refreshing
+              (scrollview--multiline-display-replacement-p window)
+              (scrollview--tall-image-display-p window))
+    (scrollview--schedule-refresh window)))
 
 (defun scrollview--after-change (&rest _)
   "Refresh windows showing the current buffer after buffer changes."

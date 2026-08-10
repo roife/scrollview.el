@@ -1390,6 +1390,45 @@ When STRING is non-nil, include it as the clicked string object."
     (should (= (hash-table-count scrollview--pending-windows) 1))
     (should (timerp scrollview--refresh-timer))))
 
+(ert-deftest scrollview-multiline-display-replacement-suspends-scroll-refresh ()
+  (scrollview-test--reset-state)
+  (scrollview-test--with-displayed-buffer
+    (scrollview-test--insert-lines 20)
+    (let* ((window (selected-window))
+           (replacement (make-overlay (point-min) (point-max))))
+      (unwind-protect
+          (progn
+            (overlay-put replacement 'display "replacement\ntext\n")
+            (setq-local scrollview-mode t)
+            (should (scrollview--multiline-display-replacement-p window))
+            (should-not (scrollview--window-eligible-p window))
+            (scrollview--after-window-scroll window nil)
+            (should-not (gethash window scrollview--pending-windows))
+            (should-not (timerp scrollview--refresh-timer))
+            (delete-overlay replacement)
+            (should-not (scrollview--multiline-display-replacement-p window))
+            (scrollview--after-window-scroll window nil)
+            (should (gethash window scrollview--pending-windows))
+            (should (timerp scrollview--refresh-timer)))
+        (delete-overlay replacement)))))
+
+(ert-deftest scrollview-tall-image-suspends-scroll-refresh ()
+  (scrollview-test--reset-state)
+  (scrollview-test--with-displayed-buffer
+    (insert "cover\ntext\n")
+    (put-text-property
+     (point-min) (1+ (point-min)) 'display
+     '(image :type png :file "/not-loaded.png" :width 220 :height 220))
+    (let ((window (selected-window)))
+      (setq-local scrollview-mode t)
+      (cl-letf (((symbol-function 'window-default-font-height)
+                 (lambda (_window) 20)))
+        (should (scrollview--tall-image-display-p window))
+        (should-not (scrollview--window-eligible-p window))
+        (scrollview--after-window-scroll window nil)
+        (should-not (gethash window scrollview--pending-windows))
+        (should-not (timerp scrollview--refresh-timer))))))
+
 (ert-deftest scrollview-pending-refresh-skips-current-render-state ()
   (scrollview-test--reset-state)
   (scrollview-test--with-displayed-buffer
