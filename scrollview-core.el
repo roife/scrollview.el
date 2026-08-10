@@ -924,26 +924,27 @@ correct."
                         (cl-loop with current-row = 0
                                  for row from 0 below (length slots)
                                  for slot = (aref slots row)
-                                 do (when (< current-row row)
-                                      (vertical-motion (- row current-row))
-                                      (setq current-row row))
                                  when slot
-                                 do (let* ((target-line
-                                            (scrollview--target-line-for-row
-                                             slot row info))
-                                           (same-row-overlay
-                                            (gethash row by-row))
-                                           (overlay (or same-row-overlay
-                                                        (pop spare)
-                                                        (make-overlay
-                                                         (point) (point)))))
-                                      (when same-row-overlay
-                                        (remhash row by-row))
-                                      (push
-                                       (scrollview--update-overlay-at-point
-                                        overlay window row slot target-line
-                                        side margin-p)
-                                       overlays))))))
+                                 do (progn
+                                      (when (< current-row row)
+                                        (vertical-motion (- row current-row))
+                                        (setq current-row row))
+                                      (let* ((target-line
+                                              (scrollview--target-line-for-row
+                                               slot row info))
+                                             (same-row-overlay
+                                              (gethash row by-row))
+                                             (overlay (or same-row-overlay
+                                                          (pop spare)
+                                                          (make-overlay
+                                                           (point) (point)))))
+                                        (when same-row-overlay
+                                          (remhash row by-row))
+                                        (push
+                                         (scrollview--update-overlay-at-point
+                                          overlay window row slot target-line
+                                          side margin-p)
+                                         overlays)))))))
                   (scrollview--delete-unused-overlays by-row spare)
                   (puthash window overlays scrollview--window-overlays)))
             (scrollview--delete-window-overlays window))
