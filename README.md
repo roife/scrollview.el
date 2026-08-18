@@ -63,7 +63,7 @@ Common alternatives:
 | `scrollview-line-limit` | `20000` | Above this line count, restricted mode disables signs.  Set to `-1` to disable the limit. |
 | `scrollview-byte-limit` | `1000000` | Above this buffer size, restricted mode disables signs.  Set to `-1` to disable the limit. |
 | `scrollview-signs-on-startup` | `all` | Built-in sign groups enabled on first use.  Use `all`, `nil`, or a list of group symbols. |
-| `scrollview-refresh-delay` | `0.03` | Idle delay, in seconds, for coalesced refreshes after scrolling or data changes. |
+| `scrollview-refresh-delay` | `0.03` | Idle delay, in seconds, for scheduled refreshes. |
 
 Restricted mode keeps the scrollbar and skips sign collection.
 
