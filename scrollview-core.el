@@ -111,19 +111,6 @@ the cached sign item list and on track geometry, so scrolling can reuse it.")
 (defvar-local scrollview--diagnostic-state-generation 0
   "Buffer-local generation incremented after diagnostics updates.")
 
-(defvar-local scrollview--line-count-cache nil
-  "Buffer-local cache of the current line count.")
-
-(defvar-local scrollview--line-change-state nil
-  "Line-count state captured by `scrollview--before-change'.")
-
-(defvar-local scrollview--top-line-cache nil
-  "Buffer-local cache of (TICK START . LINE) for `scrollview--window-top-line'.
-TICK is `buffer-chars-modified-tick', START is a buffer position, and LINE is
-the one-based line number at START.  When the buffer is unmodified we can
-compute the line number for a different START by scanning only the delta
-between START values instead of rescanning from `point-min'.")
-
 (defvar scrollview--window-render-state (scrollview--make-window-table)
   "Hash table mapping windows to their last rendered state.")
 
@@ -153,43 +140,7 @@ between START values instead of rescanning from `point-min'.")
 
 (defun scrollview--line-count ()
   "Return the current buffer's line count."
-  (let ((tick (buffer-chars-modified-tick)))
-    (if (and scrollview--line-count-cache
-             (= (car scrollview--line-count-cache) tick))
-        (cdr scrollview--line-count-cache)
-      (let ((count (max 1 (line-number-at-pos (point-max) t))))
-        (setq scrollview--line-count-cache (cons tick count))
-        count))))
-
-(defun scrollview--count-newlines (start end)
-  "Return the number of newline characters between START and END."
-  (save-excursion
-    (save-restriction
-      (widen)
-      (goto-char start)
-      (let ((count 0))
-        (while (search-forward "\n" end t)
-          (cl-incf count))
-        count))))
-
-(defun scrollview--before-change (start end)
-  "Capture cached line-count information before changing START through END."
-  (let ((tick (buffer-chars-modified-tick)))
-    (setq scrollview--line-change-state
-          (when (and scrollview--line-count-cache
-                     (= tick (car scrollview--line-count-cache)))
-            (vector (cdr scrollview--line-count-cache)
-                    (scrollview--count-newlines start end))))))
-
-(defun scrollview--update-line-count-after-change (start end)
-  "Update the cached line count after newly inserted text START through END."
-  (when scrollview--line-change-state
-    (let ((count (+ (aref scrollview--line-change-state 0)
-                    (- (scrollview--count-newlines start end)
-                       (aref scrollview--line-change-state 1)))))
-      (setq scrollview--line-count-cache
-            (cons (buffer-chars-modified-tick) (max 1 count)))))
-  (setq scrollview--line-change-state nil))
+  (max 1 (line-number-at-pos (point-max) t)))
 
 (defun scrollview--cached-collector-value (key token collector)
   "Return cached KEY value for TOKEN, or compute it with COLLECTOR."
@@ -207,25 +158,6 @@ between START values instead of rescanning from `point-min'.")
   "Return sorted unique integer LINES."
   (seq-uniq (sort (seq-filter #'integerp lines) #'<) #'=))
 
-(defun scrollview--make-line-tracker ()
-  "Return mutable state for monotonically increasing position lookups."
-  (cons (point-min) (line-number-at-pos (point-min) t)))
-
-(defun scrollview--tracked-line-number (position tracker)
-  "Return the absolute line at POSITION and advance mutable TRACKER.
-POSITION values must be supplied in nondecreasing order.  Unlike repeated
-calls to `line-number-at-pos', this scans each intervening buffer region at
-most once."
-  (let ((line-start
-         (save-excursion
-           (goto-char position)
-           (line-beginning-position))))
-    (unless (= line-start (car tracker))
-      (setcdr tracker (+ (cdr tracker)
-                         (count-lines (car tracker) line-start)))
-      (setcar tracker line-start))
-    (cdr tracker)))
-
 (defun scrollview--clamp-lines (lines buffer-lines)
   "Clamp LINES to the one-based range of BUFFER-LINES."
   (scrollview--dedupe-sorted-lines
@@ -238,49 +170,9 @@ most once."
   (max 1 (truncate (window-body-height window))))
 
 (defun scrollview--window-top-line (window)
-  "Return the line number at WINDOW's start.
-Uses a buffer-local cache to avoid the O(N) newline scan from `point-min'
-that `line-number-at-pos' performs.  When the buffer is unmodified since the
-previous call we walk only the delta between the cached and current
-positions, which during scrolling is typically a handful of newlines."
-  (let ((raw-start (window-start window)))
-    (with-current-buffer (window-buffer window)
-      (let ((tick (buffer-chars-modified-tick))
-            (cache scrollview--top-line-cache)
-            ;; Normalize to the beginning of the line containing the
-            ;; window-start position so `count-lines' deltas are exact —
-            ;; this is the same normalization `line-number-at-pos' does.
-            (start (save-excursion
-                     (save-restriction
-                       (widen)
-                       (goto-char raw-start)
-                       (forward-line 0)
-                       (point)))))
-        (cond
-         ;; Same tick & same line-start: return cached value verbatim.
-         ((and cache
-               (= (car cache) tick)
-               (= (cadr cache) start))
-          (cddr cache))
-         ;; Same tick, different start: walk only the delta.
-         ((and cache (= (car cache) tick))
-          (let* ((cached-start (cadr cache))
-                 (cached-line (cddr cache))
-                 (line (save-excursion
-                         (save-restriction
-                           (widen)
-                           (if (>= start cached-start)
-                               (+ cached-line
-                                  (count-lines cached-start start))
-                             (max 1 (- cached-line
-                                       (count-lines start cached-start))))))))
-            (setq scrollview--top-line-cache (cons tick (cons start line)))
-            line))
-         ;; Buffer modified or no cache: full scan, then memoize.
-         (t
-          (let ((line (line-number-at-pos start t)))
-            (setq scrollview--top-line-cache (cons tick (cons start line)))
-            line)))))))
+  "Return the line number at WINDOW's start."
+  (with-current-buffer (window-buffer window)
+    (line-number-at-pos (window-start window) t)))
 
 (defun scrollview--restricted-p (&optional buffer)
   "Return non-nil when BUFFER should use restricted mode."
@@ -1144,9 +1036,8 @@ relevant has changed since the last refresh."
         (scrollview--schedule-scroll-refresh window)
       (scrollview--refresh-now window 'scroll))))
 
-(defun scrollview--after-change (start end _old-length)
+(defun scrollview--after-change (&rest _)
   "Refresh windows showing the current buffer after buffer changes."
-  (scrollview--update-line-count-after-change start end)
   (scrollview--invalidate-buffer-sign-cache)
   (scrollview--schedule-buffer-refresh))
 
@@ -1376,8 +1267,6 @@ When GROUPS is non-nil, only those sign groups are considered."
         (scrollview--install-global-hooks)
         (add-hook 'window-scroll-functions
                   #'scrollview--after-window-scroll nil t)
-        (add-hook 'before-change-functions
-                  #'scrollview--before-change nil t)
         (add-hook 'after-change-functions
                   #'scrollview--after-change nil t)
         (add-hook 'post-command-hook
@@ -1388,8 +1277,6 @@ When GROUPS is non-nil, only those sign groups are considered."
           (scrollview--schedule-refresh window)))
     (remove-hook 'window-scroll-functions
                  #'scrollview--after-window-scroll t)
-    (remove-hook 'before-change-functions
-                 #'scrollview--before-change t)
     (remove-hook 'after-change-functions
                  #'scrollview--after-change t)
     (remove-hook 'post-command-hook
