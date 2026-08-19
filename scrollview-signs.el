@@ -528,11 +528,30 @@ literally with `search-forward'."
 
 (defun scrollview--eglot-highlight-token-value (overlays)
   "Return a cache token for Eglot highlight OVERLAYS."
-  (mapcar (lambda (overlay)
-            (list (overlay-start overlay)
-                  (overlay-end overlay)
-                  (overlay-get overlay 'face)))
-          overlays))
+  (cl-loop for overlay in overlays
+           when (overlayp overlay)
+           collect (list (overlay-start overlay)
+                         (overlay-end overlay)
+                         (overlay-get overlay 'face))))
+
+(defun scrollview--eglot-highlight-token-matches-p (overlays token)
+  "Return non-nil when OVERLAYS exactly match saved TOKEN.
+The comparison walks both inputs without constructing a current-state
+snapshot, so an unchanged command allocates no per-overlay cons cells."
+  (catch 'different
+    (let ((current overlays)
+          (saved token))
+      (while current
+        (let ((overlay (pop current)))
+          (when (overlayp overlay)
+            (unless saved
+              (throw 'different nil))
+            (let ((entry (pop saved)))
+              (unless (and (eql (overlay-start overlay) (nth 0 entry))
+                           (eql (overlay-end overlay) (nth 1 entry))
+                           (equal (overlay-get overlay 'face) (nth 2 entry)))
+                (throw 'different nil))))))
+      (null saved))))
 
 (defun scrollview--eglot-highlight-lines ()
   "Return lines highlighted by Eglot documentHighlight overlays."
@@ -899,7 +918,6 @@ literally with `search-forward'."
 
     (add-hook 'isearch-update-post-hook #'scrollview--after-isearch-update)
     (add-hook 'isearch-mode-end-hook #'scrollview--after-isearch-end)
-    (add-hook 'post-command-hook #'scrollview--after-eglot-post-command)
     (unless (advice-member-p #'scrollview--after-lazy-highlight-cleanup
                              'lazy-highlight-cleanup)
       (advice-add 'lazy-highlight-cleanup
@@ -911,10 +929,13 @@ literally with `search-forward'."
   (when (and (bound-and-true-p scrollview-mode)
              (scrollview-sign-group-active-p 'eglot)
              (scrollview--eglot-available-p))
-    (let* ((overlays (scrollview--eglot-highlight-overlays))
-           (token (scrollview--eglot-highlight-token-value overlays)))
-      (unless (equal token scrollview--eglot-highlight-token)
-        (setq scrollview--eglot-highlight-token token)
+    (let ((overlays (and (boundp 'eglot--highlights)
+                         (listp eglot--highlights)
+                         eglot--highlights)))
+      (unless (scrollview--eglot-highlight-token-matches-p
+               overlays scrollview--eglot-highlight-token)
+        (setq scrollview--eglot-highlight-token
+              (scrollview--eglot-highlight-token-value overlays))
         (cl-incf scrollview--eglot-highlight-state-generation)
         (scrollview--invalidate-buffer-sign-cache)
         (scrollview--schedule-buffer-refresh)))))

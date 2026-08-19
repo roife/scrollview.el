@@ -1746,23 +1746,46 @@ When STRING is non-nil, include it as the clicked string object."
       (setq scrollview-mode t)
       (let ((overlay (make-overlay (point-min) (line-end-position))))
         (unwind-protect
-            (let ((eglot--highlights (list overlay)))
-              (cl-letf (((symbol-function
-                          'scrollview--invalidate-buffer-sign-cache)
+          (let ((eglot--highlights (list overlay))
+                (snapshots 0))
+            (cl-letf (((symbol-function
+                        'scrollview--invalidate-buffer-sign-cache)
                          (lambda (&optional _buffer)
                            (setq invalidated t)))
-                        ((symbol-function 'scrollview--schedule-buffer-refresh)
-                         (lambda (&optional _buffer)
-                           (setq scheduled t))))
-                (scrollview--after-eglot-post-command)
-                (should invalidated)
-                (should scheduled)
-                (setq invalidated nil
-                      scheduled nil)
-                (scrollview--after-eglot-post-command)
-                (should-not invalidated)
-                (should-not scheduled)))
+                      ((symbol-function 'scrollview--schedule-buffer-refresh)
+                       (lambda (&optional _buffer)
+                         (setq scheduled t)))
+                      ((symbol-function
+                        'scrollview--eglot-highlight-token-value)
+                       (lambda (overlays)
+                         (cl-incf snapshots)
+                         (cl-loop for item in overlays
+                                  when (overlayp item)
+                                  collect (list (overlay-start item)
+                                                (overlay-end item)
+                                                (overlay-get item 'face))))))
+              (scrollview--after-eglot-post-command)
+              (should invalidated)
+              (should scheduled)
+              (should (= snapshots 1))
+              (setq invalidated nil
+                    scheduled nil)
+              (scrollview--after-eglot-post-command)
+              (should-not invalidated)
+              (should-not scheduled)
+              (should (= snapshots 1))))
           (delete-overlay overlay))))))
+
+(ert-deftest scrollview-eglot-post-command-hook-is-buffer-local ()
+  (scrollview-test--reset-state)
+  (scrollview-test--with-displayed-buffer
+    (let ((scrollview-signs-on-startup '(eglot)))
+      (scrollview-mode 1)
+      (should (local-variable-p 'post-command-hook))
+      (should (memq #'scrollview--after-eglot-post-command
+                    post-command-hook))
+      (should-not (memq #'scrollview--after-eglot-post-command
+                        (default-value 'post-command-hook))))))
 
 (ert-deftest scrollview-conflict-collector ()
   (scrollview-test--reset-state)

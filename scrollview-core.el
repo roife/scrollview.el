@@ -1477,6 +1477,8 @@ When GROUPS is non-nil, only those sign groups are considered."
                   #'scrollview--after-window-scroll nil t)
         (add-hook 'after-change-functions
                   #'scrollview--after-change nil t)
+        (add-hook 'post-command-hook
+                  #'scrollview--after-eglot-post-command nil t)
         (add-hook 'kill-buffer-hook
                   #'scrollview--delete-buffer-overlays nil t)
         (dolist (window (get-buffer-window-list (current-buffer) nil t))
@@ -1485,6 +1487,8 @@ When GROUPS is non-nil, only those sign groups are considered."
                  #'scrollview--after-window-scroll t)
     (remove-hook 'after-change-functions
                  #'scrollview--after-change t)
+    (remove-hook 'post-command-hook
+                 #'scrollview--after-eglot-post-command t)
     (remove-hook 'kill-buffer-hook
                  #'scrollview--delete-buffer-overlays t)
     (scrollview--delete-buffer-overlays (current-buffer))))
