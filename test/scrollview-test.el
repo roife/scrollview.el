@@ -48,6 +48,7 @@
   (setq scrollview--window-sign-cache (make-hash-table :test #'eq))
   (setq scrollview--window-sign-row-cache (make-hash-table :test #'eq))
   (setq scrollview--window-render-state (make-hash-table :test #'eq))
+  (setq scrollview--display-string-cache (make-hash-table :test #'eq))
   (setq scrollview--sign-cache-generation 0)
   (setq scrollview--sign-render-face-cache (make-hash-table :test #'equal))
   (setq scrollview--thumb-face-state nil)
@@ -955,7 +956,7 @@ When STRING is non-nil, include it as the clicked string object."
                    (error "fringe availability should not be checked"))))
         (should (scrollview--window-eligible-p (selected-window)))))))
 
-(ert-deftest scrollview-margin-after-string-renders-sign-glyph ()
+(ert-deftest scrollview-margin-after-string-is-cached-and-row-independent ()
   (let* ((scrollview-area 'margin)
          (scrollview-side 'left)
          (slot '(:type sign
@@ -970,10 +971,9 @@ When STRING is non-nil, include it as the clicked string object."
     (should (string= glyph "*"))
     (should (eq (get-text-property 0 'face glyph)
                 'scrollview-search-face))
-    (should (= (get-text-property 0 'scrollview-target-line string) 12))
-    (should (= (get-text-property 0 'scrollview-target-line glyph) 12))
-    (should (eq (get-text-property 0 'scrollview-target-type glyph)
-                'sign))))
+    (should-not (get-text-property 0 'scrollview-target-line string))
+    (should-not (get-text-property 0 'scrollview-target-line glyph))
+    (should (eq string (scrollview--overlay-after-string slot 99)))))
 
 (ert-deftest scrollview-refresh-renders-margin-overlays ()
   (scrollview-test--reset-state)
@@ -1200,18 +1200,17 @@ When STRING is non-nil, include it as the clicked string object."
          :collector (lambda (_window) '(75)))
         (scrollview-mode 1)
         (scrollview-refresh (selected-window))
-        (let ((string
-               (cl-loop for overlay in (gethash (selected-window)
-                                                scrollview--window-overlays)
-                        for string = (overlay-get overlay 'after-string)
-                        when (eq (get-text-property
-                                  0 'scrollview-target-type string)
-                                 'sign)
-                        return string)))
-          (should string)
+        (let* ((overlay
+                (cl-find-if
+                 (lambda (item)
+                   (eq (overlay-get item 'scrollview-target-type) 'sign))
+                 (gethash (selected-window) scrollview--window-overlays)))
+               (row (and overlay
+                         (overlay-get overlay 'scrollview-row))))
+          (should overlay)
           (scrollview-click
            (scrollview-test--mouse-event
-            (selected-window) 'right-fringe 0 string))
+            (selected-window) 'right-fringe row))
           (should (= (line-number-at-pos nil t) 75)))))))
 
 (ert-deftest scrollview-custom-sign-navigation ()

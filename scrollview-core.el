@@ -119,6 +119,9 @@ between START values instead of rescanning from `point-min'.")
 (defvar scrollview--window-render-state (make-hash-table :test #'eq)
   "Hash table mapping windows to mutable `scrollview--window-state' values.")
 
+(defvar scrollview--display-string-cache (make-hash-table :test #'eq)
+  "Nested cache of immutable overlay display strings.")
+
 (defvar scrollview-mode-map
   (let ((map (make-sparse-keymap)))
     (define-key map [left-fringe mouse-1] #'scrollview-click)
@@ -796,8 +799,7 @@ unchanged.  A cached sign list keeps its identity across scroll refreshes."
                       :priority scrollview--scrollbar-priority
                       :order most-positive-fixnum
                       :bitmap 'filled-rectangle
-                      :face 'scrollview-thumb-face
-                      :help-echo "scrollview scrollbar")))))
+                      :face 'scrollview-thumb-face)))))
     (when candidates
       (dotimes (row window-lines)
         (when-let* ((item (aref candidates row))
@@ -820,10 +822,7 @@ unchanged.  A cached sign list keeps its identity across scroll refreshes."
                             :line line
                             :group (scrollview--sign-spec-group spec)
                             :variant (scrollview--sign-spec-variant spec)
-                            :highlighted highlighted
-                            :help-echo (format "scrollview %s sign at line %d"
-                                               (scrollview--sign-spec-group spec)
-                                               line)))))))))
+                            :highlighted highlighted))))))))
     slots))
 
 (defun scrollview--overlay-position-at-point ()
@@ -863,43 +862,59 @@ unchanged.  A cached sign list keeps its identity across scroll refreshes."
     (`(sign _ _ scrollview-sign-delete-bitmap) "-")
     (_ "*")))
 
-(defun scrollview--propertized-display-string
-    (string face target-line target-type &rest properties)
-  "Return STRING carrying scrollview display properties."
-  (apply #'propertize string
-         'face face
-         'mouse-face 'highlight
-         'scrollview-target-line target-line
-         'scrollview-target-type target-type
-         properties))
+(defun scrollview--display-cache-level (table key test)
+  "Return TABLE's nested hash for KEY, creating it with TEST if absent."
+  (or (gethash key table)
+      (let ((level (make-hash-table :test test)))
+        (puthash key level table)
+        level)))
 
 (defun scrollview--overlay-render-state (slot target-line)
   "Return the rendered overlay state for SLOT and TARGET-LINE."
+  (ignore target-line)
   (list :side (scrollview--overlay-display-side)
         :bitmap (plist-get slot :bitmap)
         :margin-glyph (and (scrollview--margin-area-p)
                            (scrollview--margin-glyph slot))
         :face (plist-get slot :face)
-        :target-line target-line
         :target-type (plist-get slot :type)
-        :help-echo (plist-get slot :help-echo)
+        :group (plist-get slot :group)
         :priority scrollview--overlay-priority))
 
-(defun scrollview--overlay-after-string (slot target-line)
-  "Return the after-string for SLOT and TARGET-LINE."
+(defun scrollview--overlay-after-string (slot &optional _target-line)
+  "Return the cached, row-independent after-string for SLOT."
   (let* ((face (plist-get slot :face))
-         (target-type (plist-get slot :type))
-         (display
-          (if (scrollview--margin-area-p)
-              `((margin ,(scrollview--overlay-display-side))
-                ,(scrollview--propertized-display-string
-                  (scrollview--margin-glyph slot) face target-line target-type))
-            `(,(scrollview--overlay-display-side)
-              ,(plist-get slot :bitmap)
-              ,face))))
-    (scrollview--propertized-display-string
-     "." face target-line target-type
-     'display display)))
+         (side (scrollview--overlay-display-side))
+         (visual (if (scrollview--margin-area-p)
+                     (scrollview--margin-glyph slot)
+                   (plist-get slot :bitmap)))
+         (side-cache (scrollview--display-cache-level
+                      scrollview--display-string-cache side #'equal))
+         (visual-cache (scrollview--display-cache-level
+                        side-cache visual #'equal)))
+    (or (gethash face visual-cache)
+        (let* ((display
+                (if (scrollview--margin-area-p)
+                    `((margin ,side)
+                      ,(propertize visual
+                                   'face face
+                                   'mouse-face 'highlight))
+                  `(,side ,visual ,face)))
+               (string (propertize "."
+                                   'face face
+                                   'mouse-face 'highlight
+                                   'display display)))
+          (puthash face string visual-cache)
+          string))))
+
+(defun scrollview--overlay-help-echo (_window object _position)
+  "Return help text for scrollview display OBJECT."
+  (if (and (overlayp object)
+           (eq (overlay-get object 'scrollview-target-type) 'sign))
+      (format "scrollview %s sign at line %d"
+              (overlay-get object 'scrollview-group)
+              (overlay-get object 'scrollview-target-line))
+    "scrollview scrollbar"))
 
 (defun scrollview--update-overlay-at-point (overlay window row slot target-line)
   "Move and update OVERLAY for WINDOW, ROW, SLOT, and TARGET-LINE."
@@ -915,11 +930,15 @@ unchanged.  A cached sign list keeps its identity across scroll refreshes."
       (overlay-put overlay 'window window)
       (overlay-put overlay 'priority scrollview--overlay-priority)
       (overlay-put overlay 'scrollview t)
-      (overlay-put overlay 'scrollview-target-line target-line)
       (overlay-put overlay 'scrollview-target-type (plist-get slot :type))
-      (overlay-put overlay 'help-echo (plist-get slot :help-echo))
+      (overlay-put overlay 'scrollview-group (plist-get slot :group))
+      (overlay-put overlay 'help-echo #'scrollview--overlay-help-echo)
       (overlay-put overlay 'scrollview-render-state state))
-    (overlay-put overlay 'scrollview-row row)
+    (let ((line (and (eq (plist-get slot :type) 'sign) target-line)))
+      (unless (eql line (overlay-get overlay 'scrollview-target-line))
+        (overlay-put overlay 'scrollview-target-line line)))
+    (unless (eql row (overlay-get overlay 'scrollview-row))
+      (overlay-put overlay 'scrollview-row row))
     overlay))
 
 (defun scrollview--target-line-for-row (slot row info)
@@ -1245,6 +1264,13 @@ relevant has changed since the last refresh."
               (buffer-lines (plist-get info :buffer-lines)))
     (scrollview--row-to-line row track-lines buffer-lines)))
 
+(defun scrollview--event-overlay (window position)
+  "Return WINDOW's active scrollview overlay at mouse POSITION."
+  (when-let* ((row (scrollview--event-row position)))
+    (cl-find-if (lambda (overlay)
+                  (eql row (overlay-get overlay 'scrollview-row)))
+                (gethash window scrollview--window-overlays))))
+
 (defun scrollview--goto-line (window line &optional set-start)
   "Select WINDOW and move point to one-based LINE.
 When SET-START is non-nil, also make LINE the window start."
@@ -1267,11 +1293,13 @@ When SET-START is non-nil, also make LINE the window start."
              (eq area (with-current-buffer (window-buffer window)
                         (scrollview--click-area))))
         (with-current-buffer (window-buffer window)
-          (let* ((line (or (mouse-posn-property
-                            position 'scrollview-target-line)
-                           (scrollview--event-target-line window position)))
-                 (type (mouse-posn-property
-                        position 'scrollview-target-type)))
+          (let* ((overlay (scrollview--event-overlay window position))
+                 (type (and overlay
+                            (overlay-get overlay 'scrollview-target-type)))
+                 (line (or (and (eq type 'sign)
+                                (overlay-get overlay
+                                             'scrollview-target-line))
+                           (scrollview--event-target-line window position))))
             (if line
                 (scrollview--goto-line window line (not (eq type 'sign)))
               (mouse-set-point event))))
