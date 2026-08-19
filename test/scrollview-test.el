@@ -21,16 +21,16 @@
              scrollview--window-margins)
     (dolist (window windows)
       (scrollview--restore-window-margins window)))
-  (setq scrollview--window-overlays (make-hash-table :test #'eq))
-  (setq scrollview--window-overlay-pools (make-hash-table :test #'eq))
-  (setq scrollview--window-margins (make-hash-table :test #'eq))
-  (setq scrollview--pending-windows (make-hash-table :test #'eq))
+  (setq scrollview--window-overlays (scrollview--make-window-table))
+  (setq scrollview--window-overlay-pools (scrollview--make-window-table))
+  (setq scrollview--window-margins (scrollview--make-window-table))
+  (setq scrollview--pending-windows (scrollview--make-window-table))
   (setq scrollview--pending-all nil)
   (maphash (lambda (_window timer)
              (when (timerp timer)
                (cancel-timer timer)))
            scrollview--scroll-refresh-timers)
-  (setq scrollview--scroll-refresh-timers (make-hash-table :test #'eq))
+  (setq scrollview--scroll-refresh-timers (scrollview--make-window-table))
   (when (timerp scrollview--refresh-timer)
     (cancel-timer scrollview--refresh-timer))
   (setq scrollview--refresh-timer nil)
@@ -52,9 +52,9 @@
   (setq scrollview--last-selected-window nil)
   (setq scrollview--sign-groups (make-hash-table :test #'eq))
   (setq scrollview--sign-specs (make-hash-table :test #'eql))
-  (setq scrollview--window-sign-cache (make-hash-table :test #'eq))
-  (setq scrollview--window-sign-row-cache (make-hash-table :test #'eq))
-  (setq scrollview--window-render-state (make-hash-table :test #'eq))
+  (setq scrollview--window-sign-cache (scrollview--make-window-table))
+  (setq scrollview--window-sign-row-cache (scrollview--make-window-table))
+  (setq scrollview--window-render-state (scrollview--make-window-table))
   (setq scrollview--display-string-cache (make-hash-table :test #'eq))
   (setq scrollview--sign-cache-generation 0)
   (setq scrollview--sign-render-face-cache (make-hash-table :test #'equal))
@@ -164,6 +164,17 @@ When STRING is non-nil, include it as the clicked string object."
   (dolist (feature '(scrollview scrollview-custom scrollview-faces
                                 scrollview-core scrollview-signs))
     (should (featurep feature))))
+
+(ert-deftest scrollview-window-state-tables-use-weak-keys ()
+  (dolist (table (list scrollview--window-overlays
+                       scrollview--window-overlay-pools
+                       scrollview--window-margins
+                       scrollview--pending-windows
+                       scrollview--scroll-refresh-timers
+                       scrollview--window-sign-cache
+                       scrollview--window-sign-row-cache
+                       scrollview--window-render-state))
+    (should (eq (hash-table-weakness table) 'key))))
 
 (ert-deftest scrollview-usable-color-rejects-unspecified-placeholders ()
   (should-not (scrollview--usable-color-p nil))

@@ -41,16 +41,20 @@
   buffer tick start vscroll hscroll pixel-width pixel-height line-height
   sign-generation spell-generation diagnostic-generation)
 
-(defvar scrollview--window-overlays (make-hash-table :test #'eq)
+(defun scrollview--make-window-table ()
+  "Return an eq hash table whose window keys are weak."
+  (make-hash-table :test #'eq :weakness 'key))
+
+(defvar scrollview--window-overlays (scrollview--make-window-table)
   "Hash table mapping windows to their scrollview overlays.")
 
-(defvar scrollview--window-overlay-pools (make-hash-table :test #'eq)
+(defvar scrollview--window-overlay-pools (scrollview--make-window-table)
   "Hash table mapping windows to detached reusable overlays.")
 
-(defvar scrollview--window-margins (make-hash-table :test #'eq)
+(defvar scrollview--window-margins (scrollview--make-window-table)
   "Hash table mapping windows to margins saved before scrollview changed them.")
 
-(defvar scrollview--pending-windows (make-hash-table :test #'eq)
+(defvar scrollview--pending-windows (scrollview--make-window-table)
   "Hash table of windows queued for refresh.")
 
 (defvar scrollview--pending-all nil
@@ -59,7 +63,7 @@
 (defvar scrollview--refresh-timer nil
   "Idle timer used to debounce scrollview refreshes.")
 
-(defvar scrollview--scroll-refresh-timers (make-hash-table :test #'eq)
+(defvar scrollview--scroll-refresh-timers (scrollview--make-window-table)
   "Hash table mapping windows to their pending throttled scroll timers.")
 
 (defvar scrollview--last-selected-window nil
@@ -80,10 +84,10 @@
 (defvar scrollview--sign-specs (make-hash-table :test #'eql)
   "Hash table mapping sign specification ids to sign specs.")
 
-(defvar scrollview--window-sign-cache (make-hash-table :test #'eq)
+(defvar scrollview--window-sign-cache (scrollview--make-window-table)
   "Hash table mapping windows to cached sign items.")
 
-(defvar scrollview--window-sign-row-cache (make-hash-table :test #'eq)
+(defvar scrollview--window-sign-row-cache (scrollview--make-window-table)
   "Hash table mapping windows to cached sign-to-row candidates.
 The expensive mapping and priority reduction only depends on the identity of
 the cached sign item list and on track geometry, so scrolling can reuse it.")
@@ -125,7 +129,7 @@ the one-based line number at START.  When the buffer is unmodified we can
 compute the line number for a different START by scanning only the delta
 between START values instead of rescanning from `point-min'.")
 
-(defvar scrollview--window-render-state (make-hash-table :test #'eq)
+(defvar scrollview--window-render-state (scrollview--make-window-table)
   "Hash table mapping windows to mutable `scrollview--window-state' values.")
 
 (defvar scrollview--display-string-cache (make-hash-table :test #'eq)
