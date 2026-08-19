@@ -63,7 +63,7 @@ Common alternatives:
 | `scrollview-side` | `right` | Display side.  Use `right` or `left`. |
 | `scrollview-visibility` | `always` | `always`, `overflow`, or `info`.  `info` shows indicators when the buffer overflows or signs exist. |
 | `scrollview-current-window-only` | `nil` | Show only in the selected window. |
-| `scrollview-excluded-modes` | `(image-mode doc-view-mode pdf-view-mode)` | Major modes, including derived modes, where scrollview is disabled. |
+| `scrollview-excluded-modes` | `(image-mode doc-view-mode pdf-view-mode scrollview-signs-buffer-mode)` | Major modes, including derived modes, where scrollview is disabled. |
 | `scrollview-line-limit` | `20000` | Above this line count, restricted mode disables signs.  Set to `-1` to disable the limit. |
 | `scrollview-byte-limit` | `1000000` | Above this buffer size, restricted mode disables signs.  Set to `-1` to disable the limit. |
 | `scrollview-signs-on-startup` | `all` | Built-in sign groups enabled on first use.  Use `all`, `nil`, or a list of group symbols. |
@@ -121,6 +121,7 @@ Enable, disable, or toggle groups at runtime:
 | `scrollview-prev` | Jump to the previous visible sign. |
 | `scrollview-first` | Jump to the first visible sign. |
 | `scrollview-last` | Jump to the last visible sign. |
+| `scrollview-show-buffer-signs` | Show all visible signs in a refreshable buffer. |
 | `scrollview-click` | Mouse command for fringe or margin clicks. |
 | `scrollview-enable-sign-group` | Enable a sign group. |
 | `scrollview-disable-sign-group` | Disable a sign group. |
@@ -128,6 +129,10 @@ Enable, disable, or toggle groups at runtime:
 
 `scrollview-next`, `scrollview-prev`, `scrollview-first`, and
 `scrollview-last` accept an optional group or group list from Lisp.
+
+The buffer created by `scrollview-show-buffer-signs` lists each sign's line,
+group, variant, priority, and source text.  Press `g` to refresh the list,
+`RET` to visit a sign, or `SPC` to preview its source.
 
 ## Mouse
 

@@ -162,7 +162,8 @@ When STRING is non-nil, include it as the clicked string object."
 
 (ert-deftest scrollview-entry-loads-internal-modules ()
   (dolist (feature '(scrollview scrollview-custom scrollview-faces
-                                scrollview-core scrollview-signs))
+                                scrollview-core scrollview-signs
+                                scrollview-list))
     (should (featurep feature))))
 
 (ert-deftest scrollview-window-state-tables-use-weak-keys ()
@@ -1284,6 +1285,51 @@ When STRING is non-nil, include it as the clicked string object."
         (should (= (line-number-at-pos nil t) 5))
         (scrollview-prev 1 '(scrollview-test))
         (should (= (line-number-at-pos nil t) 2))))))
+
+(ert-deftest scrollview-show-buffer-signs-refreshes-listing ()
+  (scrollview-test--reset-state)
+  (scrollview-test--with-displayed-buffer
+    (scrollview-test--insert-lines 6)
+    (let ((scrollview-signs-on-startup nil)
+          (scrollview-line-limit -1)
+          (scrollview-byte-limit -1)
+          (sign-lines '(2 5 2))
+          (source (current-buffer))
+          target)
+      (scrollview-register-sign-group 'scrollview-test-list t)
+      (scrollview-register-sign-spec
+       :group 'scrollview-test-list
+       :variant 'mock
+       :priority 80
+       :face 'scrollview-search-face
+       :collector (lambda (_window) sign-lines))
+      (scrollview-mode 1)
+      (unwind-protect
+          (save-window-excursion
+            (setq target (scrollview-show-buffer-signs))
+            (should (eq (current-buffer) source))
+            (with-current-buffer target
+              (should (derived-mode-p 'scrollview-signs-buffer-mode))
+              (should (eq scrollview--signs-buffer-source source))
+              (should (equal (mapcar (lambda (entry)
+                                       (plist-get (car entry) :line))
+                                     (funcall tabulated-list-entries))
+                             '(2 5)))
+              (should (string-match-p "scrollview-test-list" (buffer-string)))
+              (should (string-match-p "line 2" (buffer-string)))
+              (setq sign-lines '(1 4 6))
+              (revert-buffer)
+              (should (equal (mapcar (lambda (entry)
+                                       (plist-get (car entry) :line))
+                                     (funcall tabulated-list-entries))
+                             '(1 4 6)))
+              (goto-char (point-min))
+              (let ((marker (plist-get (tabulated-list-get-id) :marker)))
+                (should (eq (marker-buffer marker) source))
+                (with-current-buffer source
+                  (should (= (line-number-at-pos marker t) 1))))))
+        (when (buffer-live-p target)
+          (kill-buffer target))))))
 
 (ert-deftest scrollview-custom-sign-renders-over-scrollbar ()
   (scrollview-test--reset-state)

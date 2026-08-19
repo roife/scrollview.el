@@ -55,7 +55,8 @@ The value must be either `right' or `left'."
   :type 'boolean
   :group 'scrollview)
 
-(defcustom scrollview-excluded-modes '(image-mode doc-view-mode pdf-view-mode)
+(defcustom scrollview-excluded-modes
+  '(image-mode doc-view-mode pdf-view-mode scrollview-signs-buffer-mode)
   "Major modes where scrollview should not be displayed.
 Derived modes are excluded as well."
   :type '(repeat symbol)

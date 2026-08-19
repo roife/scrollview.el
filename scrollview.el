@@ -19,6 +19,7 @@
 
 (require 'scrollview-core)
 (require 'scrollview-signs)
+(require 'scrollview-list)
 
 (provide 'scrollview)
 
