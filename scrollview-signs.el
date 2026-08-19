@@ -11,26 +11,30 @@
 ;;; Code:
 
 (require 'cl-lib)
-(require 'bookmark)
-(require 'compile)
-(require 'flymake)
-(require 'flyspell)
 (require 'isearch)
 (require 'seq)
-(require 'smerge-mode)
 (require 'subr-x)
 (require 'scrollview-core)
 
+(declare-function flymake-diagnostics "flymake" (&optional beg end))
+(declare-function flymake-diagnostic-beg "flymake" (diag))
+(declare-function flymake-diagnostic-type "flymake" (diag))
+(declare-function smerge-match-conflict "smerge-mode" ())
 (declare-function diff-hl-changes "diff-hl" ())
 (declare-function diff-hl-changes-from-buffer "diff-hl" (buf))
+(declare-function flyspell-overlay-p "flyspell" (overlay))
+(declare-function compilation--ensure-parse "compile" (limit))
+(declare-function compilation--message->loc "compile" (message))
+(declare-function compilation--message->type "compile" (message))
 (declare-function symbol-overlay-get-list "symbol-overlay" (&optional index symbol))
 
+(defvar bookmark-alist)
 (defvar eglot--highlights)
 (defvar highlight-changes-mode)
 (defvar highlight-changes-visible-mode)
 (defvar highlight-symbol-keyword-alist)
-(defvar diff-hl-reference-revision nil)
-(defvar diff-hl-show-staged-changes nil)
+(defvar diff-hl-reference-revision)
+(defvar diff-hl-show-staged-changes)
 (defvar diff-hl-update-async)
 
 (defvar scrollview--bookmark-state-generation 0
@@ -171,6 +175,14 @@ literally with `search-forward'."
       'info)
      (t 'info))))
 
+(defun scrollview--flymake-diagnostic-line (diag)
+  "Return the live current-buffer line for Flymake DIAG."
+  (let ((beg (flymake-diagnostic-beg diag)))
+    (when (and (integerp beg)
+               (<= (point-min) beg)
+               (<= beg (point-max)))
+      (line-number-at-pos beg t))))
+
 (defun scrollview--diagnostic-lines ()
   "Collect diagnostic lines from Flymake and Flycheck in one pass."
   (scrollview--cached-collector-value
@@ -184,13 +196,13 @@ literally with `search-forward'."
            (result (list (cons 'error nil)
                          (cons 'warning nil)
                          (cons 'info nil))))
-       (dolist (diag (flymake-diagnostics (point-min) (point-max)))
-         (let* ((level (scrollview--diagnostic-level
-                        (flymake-diagnostic-type diag)))
-                (cell (assq level result)))
-           (setcdr cell
-                   (cons (line-number-at-pos (flymake-diagnostic-beg diag) t)
-                         (cdr cell)))))
+       (when (fboundp 'flymake-diagnostics)
+         (dolist (diag (flymake-diagnostics (point-min) (point-max)))
+           (let* ((level (scrollview--diagnostic-level
+                          (flymake-diagnostic-type diag)))
+                  (cell (assq level result)))
+             (when-let* ((line (scrollview--flymake-diagnostic-line diag)))
+               (setcdr cell (cons line (cdr cell)))))))
        (when (and (boundp 'flycheck-current-errors)
                   (fboundp 'flycheck-error-line)
                   (fboundp 'flycheck-error-level))
@@ -211,12 +223,13 @@ literally with `search-forward'."
 
 (defun scrollview--compilation-buffers ()
   "Return live compilation buffers, excluding grep buffers."
-  (seq-filter
-   (lambda (buffer)
-     (with-current-buffer buffer
-       (and (derived-mode-p 'compilation-mode)
-            (not (derived-mode-p 'grep-mode)))))
-   (buffer-list)))
+  (when (require 'compile nil t)
+    (seq-filter
+     (lambda (buffer)
+       (with-current-buffer buffer
+         (and (derived-mode-p 'compilation-mode)
+              (not (derived-mode-p 'grep-mode)))))
+     (buffer-list))))
 
 (defun scrollview--compilation-buffer-token ()
   "Return a token describing current compilation buffers."
@@ -231,7 +244,8 @@ literally with `search-forward'."
 
 (defun scrollview--compilation-message-list ()
   "Return parsed compilation messages in the current compilation buffer."
-  (compilation--ensure-parse (point-max))
+  (when (fboundp 'compilation--ensure-parse)
+    (compilation--ensure-parse (point-max)))
   (let ((pos (point-min))
         messages)
     (while (< pos (point-max))
@@ -263,8 +277,9 @@ literally with `search-forward'."
      ((bufferp target)
       (eq target source-buffer))
      ((and source-file (stringp target))
-      (equal (expand-file-name source-file)
-             (scrollview--compilation-file-spec-name file-spec))))))
+      (scrollview--same-file-p
+       source-file
+       (scrollview--compilation-file-spec-name file-spec))))))
 
 (defun scrollview--compilation-loc-line (loc source-buffer source-file)
   "Return source line for compilation LOC in SOURCE-BUFFER or SOURCE-FILE."
@@ -333,11 +348,12 @@ literally with `search-forward'."
 (defun scrollview--highlight-symbol-patterns ()
   "Return active highlight-symbol regexps for the current buffer."
   (let (patterns)
-    (dolist (entry highlight-symbol-keyword-alist)
-      (when-let* ((pattern (car-safe entry)))
-        (when (and (stringp pattern)
-                   (not (string-empty-p pattern)))
-          (cl-pushnew pattern patterns :test #'equal))))
+    (when (boundp 'highlight-symbol-keyword-alist)
+      (dolist (entry highlight-symbol-keyword-alist)
+        (when-let* ((pattern (car-safe entry)))
+          (when (and (stringp pattern)
+                     (not (string-empty-p pattern)))
+            (cl-pushnew pattern patterns :test #'equal)))))
     (nreverse patterns)))
 
 (defun scrollview--highlight-symbol-lines ()
@@ -447,6 +463,30 @@ literally with `search-forward'."
   "Collect lines highlighted by symbol-overlay."
   (scrollview--symbol-overlay-lines))
 
+(defun scrollview--same-file-p (left right)
+  "Return non-nil when LEFT and RIGHT name the same file."
+  (when (and (stringp left)
+             (stringp right))
+    (let ((left (expand-file-name left))
+          (right (expand-file-name right)))
+      (or (equal left right)
+          (ignore-errors (file-equal-p left right))))))
+
+(defun scrollview--bookmark-position-line (position)
+  "Return the line for bookmark integer POSITION in the current buffer."
+  (when (integerp position)
+    (save-excursion
+      (goto-char (min (point-max) (max (point-min) position)))
+      (line-number-at-pos nil t))))
+
+(defun scrollview--bookmark-record-filename (bookmark)
+  "Return the filename stored in BOOKMARK record, if any."
+  (cdr (assq 'filename (cdr bookmark))))
+
+(defun scrollview--bookmark-record-position (bookmark)
+  "Return the position stored in BOOKMARK record, if any."
+  (cdr (assq 'position (cdr bookmark))))
+
 (defun scrollview--bookmark-lines ()
   "Return bookmark lines for the current file buffer."
   (let ((file (buffer-file-name)))
@@ -456,17 +496,19 @@ literally with `search-forward'."
            :generation scrollview--bookmark-state-generation
            :file file)
      (lambda ()
-       (when file
+       (when (and file
+                  (require 'bookmark nil t)
+                  (boundp 'bookmark-alist))
          (scrollview--dedupe-sorted-lines
           (cl-loop for bookmark in bookmark-alist
-                   for record = (cdr bookmark)
-                   for bookmark-file = (alist-get 'filename record)
-                   for position = (alist-get 'position record)
-                   for line = (and (equal (expand-file-name file)
-                                          (expand-file-name bookmark-file))
-                                   (save-excursion
-                                     (goto-char position)
-                                     (line-number-at-pos nil t)))
+                   for bookmark-file = (scrollview--bookmark-record-filename
+                                        bookmark)
+                   for position = (scrollview--bookmark-record-position
+                                   bookmark)
+                   for line = (and (scrollview--same-file-p
+                                    file bookmark-file)
+                                   (scrollview--bookmark-position-line
+                                    position))
                    when line
                    collect line)))))))
 
@@ -474,28 +516,46 @@ literally with `search-forward'."
   "Collect bookmark lines for the current buffer."
   (scrollview--bookmark-lines))
 
+(defun scrollview--eglot-available-p ()
+  "Return non-nil when Eglot highlight state may be present."
+  (boundp 'eglot--highlights))
+
+(defun scrollview--eglot-highlight-overlays ()
+  "Return active Eglot document-highlight overlays for the current buffer."
+  (when (and (boundp 'eglot--highlights)
+             (listp eglot--highlights))
+    (seq-filter #'overlayp eglot--highlights)))
+
 (defun scrollview--eglot-highlight-token-value (overlays)
   "Return a cache token for Eglot highlight OVERLAYS."
-  (mapcar (lambda (overlay)
-            (list (overlay-start overlay)
-                  (overlay-end overlay)
-                  (overlay-get overlay 'face)))
-          overlays))
+  (cl-loop for overlay in overlays
+           when (overlayp overlay)
+           collect (list (overlay-start overlay)
+                         (overlay-end overlay)
+                         (overlay-get overlay 'face))))
 
 (defun scrollview--eglot-highlight-token-matches-p (overlays token)
   "Return non-nil when OVERLAYS exactly match saved TOKEN.
 The comparison walks both inputs without constructing a current-state
 snapshot, so an unchanged command allocates no per-overlay cons cells."
-  (and (= (length overlays) (length token))
-       (cl-every (lambda (overlay entry)
-                   (and (eql (overlay-start overlay) (nth 0 entry))
-                        (eql (overlay-end overlay) (nth 1 entry))
-                        (equal (overlay-get overlay 'face) (nth 2 entry))))
-                 overlays token)))
+  (catch 'different
+    (let ((current overlays)
+          (saved token))
+      (while current
+        (let ((overlay (pop current)))
+          (when (overlayp overlay)
+            (unless saved
+              (throw 'different nil))
+            (let ((entry (pop saved)))
+              (unless (and (eql (overlay-start overlay) (nth 0 entry))
+                           (eql (overlay-end overlay) (nth 1 entry))
+                           (equal (overlay-get overlay 'face) (nth 2 entry)))
+                (throw 'different nil))))))
+      (null saved))))
 
 (defun scrollview--eglot-highlight-lines ()
   "Return lines highlighted by Eglot documentHighlight overlays."
-  (let ((overlays eglot--highlights))
+  (let ((overlays (scrollview--eglot-highlight-overlays)))
     (scrollview--cached-collector-value
      'eglot
      (list :tick (buffer-chars-modified-tick)
@@ -513,7 +573,13 @@ snapshot, so an unchanged command allocates no per-overlay cons cells."
   (sort
    (seq-filter
     (lambda (overlay)
-      (eq (overlay-get overlay 'smerge) 'conflict))
+      (and (overlayp overlay)
+           (eq (overlay-buffer overlay) (current-buffer))
+           (eq (overlay-get overlay 'smerge) 'conflict)
+           (overlay-start overlay)
+           (overlay-end overlay)
+           (<= (point-min) (overlay-start overlay))
+           (<= (overlay-end overlay) (point-max))))
     (overlays-in (point-min) (point-max)))
    (lambda (left right)
      (< (overlay-start left) (overlay-start right)))))
@@ -530,18 +596,21 @@ snapshot, so an unchanged command allocates no per-overlay cons cells."
     (dolist (overlay overlays)
       (let ((start (overlay-start overlay))
             (end (overlay-end overlay)))
-        (when (< start end)
+        (when (and start end (< start end))
           (save-excursion
             (save-restriction
               (save-match-data
                 (narrow-to-region start end)
                 (goto-char (point-min))
-                (when (smerge-match-conflict)
-                  (push (line-number-at-pos (match-beginning 0) t) top)
-                  (when (match-beginning 5)
-                    (push (line-number-at-pos (match-beginning 5) t)
-                          middle))
-                  (push (line-number-at-pos (match-end 3) t) bottom))))))))
+                (condition-case nil
+                    (when (and (fboundp 'smerge-match-conflict)
+                               (smerge-match-conflict))
+                      (push (line-number-at-pos (match-beginning 0) t) top)
+                      (when (match-beginning 5)
+                        (push (line-number-at-pos (match-beginning 5) t)
+                              middle))
+                      (push (line-number-at-pos (match-end 3) t) bottom))
+                  (error nil))))))))
     (list (cons 'top (scrollview--dedupe-sorted-lines top))
           (cons 'middle (scrollview--dedupe-sorted-lines middle))
           (cons 'bottom (scrollview--dedupe-sorted-lines bottom)))))
@@ -567,6 +636,22 @@ snapshot, so an unchanged command allocates no per-overlay cons cells."
     (scrollview--invalidate-buffer-sign-cache)
     (scrollview--schedule-buffer-refresh)))
 
+(defun scrollview--flyspell-overlay-p (overlay)
+  "Return non-nil when OVERLAY is owned by Flyspell."
+  (or (overlay-get overlay 'flyspell-overlay)
+      (and (fboundp 'flyspell-overlay-p)
+           (flyspell-overlay-p overlay))))
+
+(defun scrollview--jinx-overlay-p (overlay)
+  "Return non-nil when OVERLAY is owned by Jinx."
+  (eq (overlay-get overlay 'category) 'jinx-overlay))
+
+(defun scrollview--spell-overlay-p (overlay)
+  "Return non-nil when OVERLAY belongs to the selected spell checker."
+  (pcase scrollview-spell-checker
+    ('flyspell (scrollview--flyspell-overlay-p overlay))
+    ('jinx (scrollview--jinx-overlay-p overlay))))
+
 (defun scrollview--spell-lines ()
   "Return lines containing misspellings from the selected spell checker."
   (scrollview--cached-collector-value
@@ -577,19 +662,20 @@ snapshot, so an unchanged command allocates no per-overlay cons cells."
    (lambda ()
      (scrollview--dedupe-sorted-lines
       (cl-loop for overlay in (overlays-in (point-min) (point-max))
-               when (pcase scrollview-spell-checker
-                      ('flyspell (flyspell-overlay-p overlay))
-                      ('jinx (eq (overlay-get overlay 'category)
-                                 'jinx-overlay)))
+               when (scrollview--spell-overlay-p overlay)
                collect (line-number-at-pos (overlay-start overlay) t))))))
 
 (defun scrollview--collect-spell-lines (_window)
   "Collect spelling error lines from the selected spell checker."
   (scrollview--spell-lines))
 
+(defun scrollview--diff-hl-available-p ()
+  "Return non-nil when diff-hl can provide VC changes."
+  (require 'diff-hl nil t))
+
 (defun scrollview--diff-hl-hunks ()
   "Return diff-hl hunk tuples for the current buffer."
-  (when (require 'diff-hl nil t)
+  (when (scrollview--diff-hl-available-p)
     (let ((diff-hl-update-async nil))
       (cl-loop for (_ . value) in (diff-hl-changes)
                ;; Recent diff-hl versions return a diff buffer name for
@@ -607,8 +693,10 @@ snapshot, so an unchanged command allocates no per-overlay cons cells."
    'vc
    (list :tick (buffer-chars-modified-tick)
          :file (buffer-file-name)
-         :reference diff-hl-reference-revision
-         :show-staged diff-hl-show-staged-changes
+         :reference (and (boundp 'diff-hl-reference-revision)
+                         diff-hl-reference-revision)
+         :show-staged (and (boundp 'diff-hl-show-staged-changes)
+                           diff-hl-show-staged-changes)
          :generation scrollview--vc-state-generation)
    (lambda ()
      (let ((buffer-lines (scrollview--line-count))
@@ -830,15 +918,20 @@ snapshot, so an unchanged command allocates no per-overlay cons cells."
 
     (add-hook 'isearch-update-post-hook #'scrollview--after-isearch-update)
     (add-hook 'isearch-mode-end-hook #'scrollview--after-isearch-end)
-    (advice-add 'lazy-highlight-cleanup
-                :after #'scrollview--after-lazy-highlight-cleanup)))
+    (unless (advice-member-p #'scrollview--after-lazy-highlight-cleanup
+                             'lazy-highlight-cleanup)
+      (advice-add 'lazy-highlight-cleanup
+                  :after #'scrollview--after-lazy-highlight-cleanup))))
 
 
 (defun scrollview--after-eglot-post-command ()
   "Refresh Eglot signs when document-highlight overlays change."
   (when (and (bound-and-true-p scrollview-mode)
-             (scrollview-sign-group-active-p 'eglot))
-    (let ((overlays eglot--highlights))
+             (scrollview-sign-group-active-p 'eglot)
+             (scrollview--eglot-available-p))
+    (let ((overlays (and (boundp 'eglot--highlights)
+                         (listp eglot--highlights)
+                         eglot--highlights)))
       (unless (scrollview--eglot-highlight-token-matches-p
                overlays scrollview--eglot-highlight-token)
         (setq scrollview--eglot-highlight-token
@@ -862,8 +955,11 @@ snapshot, so an unchanged command allocates no per-overlay cons cells."
                       highlight-symbol-remove-all
                       highlight-symbol-temp-highlight
                       highlight-symbol-mode-remove-temp))
-    (advice-add function :after
-                #'scrollview--after-highlight-symbol-update)))
+    (when (and (fboundp function)
+               (not (advice-member-p
+                     #'scrollview--after-highlight-symbol-update function)))
+      (advice-add function :after
+                  #'scrollview--after-highlight-symbol-update))))
 
 
 (defun scrollview--after-highlight-changes-update (&rest _)
@@ -883,8 +979,11 @@ snapshot, so an unchanged command allocates no per-overlay cons cells."
                       highlight-changes-rotate-faces
                       highlight-compare-with-file
                       highlight-compare-buffers))
-    (advice-add function :after
-                #'scrollview--after-highlight-changes-update)))
+    (when (and (fboundp function)
+               (not (advice-member-p
+                     #'scrollview--after-highlight-changes-update function)))
+      (advice-add function :after
+                  #'scrollview--after-highlight-changes-update))))
 
 
 (defun scrollview--after-symbol-overlay-update (&rest _)
@@ -903,8 +1002,11 @@ snapshot, so an unchanged command allocates no per-overlay cons cells."
                       symbol-overlay-remove-temp
                       symbol-overlay-maybe-remove
                       symbol-overlay-maybe-put-temp))
-    (advice-add function :after
-                #'scrollview--after-symbol-overlay-update)))
+    (when (and (fboundp function)
+               (not (advice-member-p
+                     #'scrollview--after-symbol-overlay-update function)))
+      (advice-add function :after
+                  #'scrollview--after-symbol-overlay-update))))
 
 
 (defun scrollview--after-bookmark-update (&rest _)
@@ -923,8 +1025,11 @@ snapshot, so an unchanged command allocates no per-overlay cons cells."
                       bookmark-relocate
                       bookmark-load
                       bookmark-bmenu-execute-deletions))
-    (advice-add function :after
-                #'scrollview--after-bookmark-update)))
+    (when (and (fboundp function)
+               (not (advice-member-p
+                     #'scrollview--after-bookmark-update function)))
+      (advice-add function :after
+                  #'scrollview--after-bookmark-update))))
 
 
 (defun scrollview--after-compilation-update (&rest _)
@@ -949,8 +1054,9 @@ snapshot, so an unchanged command allocates no per-overlay cons cells."
     (scrollview--schedule-buffer-refresh)))
 
 (with-eval-after-load 'flymake
-  (advice-add 'flymake--publish-diagnostics
-              :after #'scrollview--after-diagnostics-update))
+  (when (fboundp 'flymake--publish-diagnostics)
+    (advice-add 'flymake--publish-diagnostics
+                :after #'scrollview--after-diagnostics-update)))
 
 (with-eval-after-load 'flycheck
   (add-hook 'flycheck-after-syntax-check-hook
@@ -961,13 +1067,19 @@ snapshot, so an unchanged command allocates no per-overlay cons cells."
                       flyspell-unhighlight-at
                       flyspell-delete-all-overlays
                       flyspell-delete-region-overlays))
-    (advice-add function :after #'scrollview--spell-note-update)))
+    (when (and (fboundp function)
+               (not (advice-member-p #'scrollview--spell-note-update
+                                     function)))
+      (advice-add function :after #'scrollview--spell-note-update))))
 
 (with-eval-after-load 'jinx
   (dolist (function '(jinx--check-region
                       jinx--cleanup
                       jinx--recheck-overlays))
-    (advice-add function :after #'scrollview--spell-note-update)))
+    (when (and (fboundp function)
+               (not (advice-member-p #'scrollview--spell-note-update
+                                     function)))
+      (advice-add function :after #'scrollview--spell-note-update))))
 
 (defun scrollview--after-diff-hl-update (&rest _)
   "Refresh scrollview signs after diff-hl updates."
@@ -978,7 +1090,10 @@ snapshot, so an unchanged command allocates no per-overlay cons cells."
       (scrollview--schedule-buffer-refresh))))
 
 (with-eval-after-load 'diff-hl
-  (advice-add 'diff-hl-update :after #'scrollview--after-diff-hl-update))
+  (unless (advice-member-p #'scrollview--after-diff-hl-update
+                           'diff-hl-update)
+    (advice-add 'diff-hl-update :after
+                #'scrollview--after-diff-hl-update)))
 
 
 
