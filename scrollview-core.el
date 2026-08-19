@@ -931,6 +931,24 @@ unchanged.  A cached sign list keeps its identity across scroll refreshes."
            (plist-get info :window-lines))
        (plist-get info :buffer-lines))))
 
+(defun scrollview--visit-active-rows (window slots function)
+  "Call FUNCTION with ROW and position for non-nil SLOTS in WINDOW.
+Rows are visited from top to bottom, so display motion resumes from the last
+active row instead of restarting at `window-start'."
+  (with-current-buffer (window-buffer window)
+    (save-restriction
+      (save-excursion
+        (goto-char (window-start window))
+        (cl-loop with current-row = 0
+                 for row from 0 below (length slots)
+                 for slot = (aref slots row)
+                 when slot
+                 do (let ((distance (- row current-row)))
+                      (when (or (zerop distance)
+                                (= (vertical-motion distance window) distance))
+                        (funcall function row (point) slot))
+                      (setq current-row row)))))))
+
 (defun scrollview--current-window-overlays (window)
   "Return reusable overlays for WINDOW as (BY-ROW SPARE).
 Stale overlays are deleted while building the return value."
@@ -1040,29 +1058,22 @@ the buffer changes."
               (scrollview--prepare-window-display-area window)
               (pcase-let ((`(,by-row ,spare)
                            (scrollview--current-window-overlays window)))
-                (with-selected-window window
-                  (save-excursion
-                    (goto-char (window-start window))
-                    (cl-loop with current-row = 0
-                             for row from 0 below (length slots)
-                             for slot = (aref slots row)
-                             do (when (< current-row row)
-                                  (vertical-motion (- row current-row))
-                                  (setq current-row row))
-                             when slot
-                             do (let* ((target-line
-                                        (scrollview--target-line-for-row
-                                         slot row info))
-                                       (same-row-overlay (gethash row by-row))
-                                       (overlay (or same-row-overlay
-                                                    (pop spare)
-                                                    (make-overlay
-                                                     (point) (point)))))
-                                  (when same-row-overlay
-                                    (remhash row by-row))
-                                  (push (scrollview--update-overlay-at-point
-                                         overlay window row slot target-line)
-                                        overlays)))))
+                (scrollview--visit-active-rows
+                 window slots
+                 (lambda (row position slot)
+                   (let* ((target-line
+                           (scrollview--target-line-for-row slot row info))
+                          (same-row-overlay (gethash row by-row))
+                          (overlay (or same-row-overlay
+                                       (pop spare)
+                                       (make-overlay position position))))
+                     (when same-row-overlay
+                       (remhash row by-row))
+                     (save-excursion
+                       (goto-char position)
+                       (push (scrollview--update-overlay-at-point
+                              overlay window row slot target-line)
+                             overlays)))))
                 (scrollview--delete-unused-overlays by-row spare)
                 (puthash window overlays scrollview--window-overlays)))
           (scrollview--delete-window-overlays window))
