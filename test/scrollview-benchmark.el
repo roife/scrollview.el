@@ -52,9 +52,15 @@
   (setq scrollview--window-overlay-pools (make-hash-table :test #'eq))
   (setq scrollview--pending-windows (make-hash-table :test #'eq))
   (setq scrollview--pending-all nil)
+  (maphash (lambda (_window timer)
+             (when (timerp timer)
+               (cancel-timer timer)))
+           scrollview--scroll-refresh-timers)
+  (setq scrollview--scroll-refresh-timers (make-hash-table :test #'eq))
   (when (timerp scrollview--refresh-timer)
     (cancel-timer scrollview--refresh-timer))
   (setq scrollview--refresh-timer nil)
+  (setq scrollview-update-interval 0)
   (remove-hook 'window-configuration-change-hook
                #'scrollview--window-configuration-change)
   (remove-hook 'window-size-change-functions

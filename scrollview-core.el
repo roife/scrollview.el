@@ -59,6 +59,9 @@
 (defvar scrollview--refresh-timer nil
   "Idle timer used to debounce scrollview refreshes.")
 
+(defvar scrollview--scroll-refresh-timers (make-hash-table :test #'eq)
+  "Hash table mapping windows to their pending throttled scroll timers.")
+
 (defvar scrollview--last-selected-window nil
   "Selected window observed by `scrollview--post-command'.")
 
@@ -449,6 +452,10 @@ unsupported display layout."
 
 (defun scrollview--delete-window-overlays (window)
   "Delete scrollview overlays for WINDOW."
+  (when-let* ((timer (gethash window scrollview--scroll-refresh-timers)))
+    (when (timerp timer)
+      (cancel-timer timer))
+    (remhash window scrollview--scroll-refresh-timers))
   (mapc #'delete-overlay (gethash window scrollview--window-overlays))
   (mapc #'delete-overlay (gethash window scrollview--window-overlay-pools))
   (remhash window scrollview--window-overlays)
@@ -1263,6 +1270,20 @@ eligible windows."
   (dolist (window (get-buffer-window-list (or buffer (current-buffer)) nil t))
     (scrollview--schedule-refresh window)))
 
+(defun scrollview--flush-scroll-refresh (window)
+  "Run WINDOW's throttled scroll refresh using its latest state."
+  (remhash window scrollview--scroll-refresh-timers)
+  (when (window-live-p window)
+    (scrollview--refresh-now window 'scroll)))
+
+(defun scrollview--schedule-scroll-refresh (window)
+  "Ensure WINDOW has at most one pending throttled scroll refresh."
+  (unless (timerp (gethash window scrollview--scroll-refresh-timers))
+    (puthash window
+             (run-with-timer scrollview-update-interval nil
+                             #'scrollview--flush-scroll-refresh window)
+             scrollview--scroll-refresh-timers)))
+
 (defun scrollview--after-window-scroll (window _start)
   "Refresh WINDOW immediately after it scrolls.
 Keeping this synchronous prevents stale scrollview overlays from riding along
@@ -1276,7 +1297,9 @@ relevant has changed since the last refresh."
   (unless (or scrollview--refreshing
               (scrollview--multiline-display-replacement-p window)
               (scrollview--tall-image-display-p window))
-    (scrollview--refresh-now window 'scroll)))
+    (if (> scrollview-update-interval 0)
+        (scrollview--schedule-scroll-refresh window)
+      (scrollview--refresh-now window 'scroll))))
 
 (defun scrollview--after-change (start end _old-length)
   "Refresh windows showing the current buffer after buffer changes."

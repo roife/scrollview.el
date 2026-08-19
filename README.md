@@ -69,6 +69,7 @@ Common alternatives:
 | `scrollview-signs-on-startup` | `all` | Built-in sign groups enabled on first use.  Use `all`, `nil`, or a list of group symbols. |
 | `scrollview-spell-checker` | `flyspell` | Spell checker used by the `spell` sign group.  Use `flyspell` or `jinx`. |
 | `scrollview-refresh-delay` | `0.03` | Idle delay, in seconds, for scheduled refreshes. |
+| `scrollview-update-interval` | `0` | Minimum interval for scroll-driven refreshes.  Zero updates synchronously; a positive value coalesces rapid events per window. |
 
 Restricted mode keeps the scrollbar and skips sign collection.
 
