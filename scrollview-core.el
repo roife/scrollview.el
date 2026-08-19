@@ -35,12 +35,6 @@
                (:constructor scrollview--make-sign-spec))
   id group variant priority bitmap face collector)
 
-(cl-defstruct (scrollview--window-state
-               (:constructor scrollview--make-window-state))
-  "Mutable render state for one window."
-  buffer tick start vscroll hscroll pixel-width pixel-height line-height
-  sign-generation spell-generation diagnostic-generation)
-
 (defun scrollview--make-window-table ()
   "Return an eq hash table whose window keys are weak."
   (make-hash-table :test #'eq :weakness 'key))
@@ -130,7 +124,7 @@ compute the line number for a different START by scanning only the delta
 between START values instead of rescanning from `point-min'.")
 
 (defvar scrollview--window-render-state (scrollview--make-window-table)
-  "Hash table mapping windows to mutable `scrollview--window-state' values.")
+  "Hash table mapping windows to their last rendered state.")
 
 (defvar scrollview--display-string-cache (make-hash-table :test #'eq)
   "Nested cache of immutable overlay display strings.")
@@ -1123,70 +1117,21 @@ Detached overlays from the window's free pool are returned as SPARE."
     ('info (or (plist-get info :overflow) sign-items))
     (_ (plist-get info :overflow))))
 
-(defun scrollview--same-render-state-p (window)
-  "Return non-nil when WINDOW's render inputs match its recorded state.
-Only constant-time window fields are read.  In particular, this deliberately
-avoids an exact `window-end', whose computation depends on redisplay."
-  (when-let* ((state (and (window-live-p window)
-                          (gethash window scrollview--window-render-state)))
-              (buffer (window-buffer window)))
+(defun scrollview--render-state (window)
+  "Return WINDOW's current render inputs without computing `window-end'."
+  (let ((buffer (window-buffer window)))
     (with-current-buffer buffer
-      (and (eq buffer (scrollview--window-state-buffer state))
-           (= (buffer-chars-modified-tick)
-              (scrollview--window-state-tick state))
-           (= (window-start window)
-              (scrollview--window-state-start state))
-           (= (window-vscroll window t)
-              (scrollview--window-state-vscroll state))
-           (= (window-hscroll window)
-              (scrollview--window-state-hscroll state))
-           (= (window-body-width window t)
-              (scrollview--window-state-pixel-width state))
-           (= (window-body-height window t)
-              (scrollview--window-state-pixel-height state))
-           (= (scrollview--window-line-height window)
-              (scrollview--window-state-line-height state))
-           (= scrollview--sign-cache-generation
-              (scrollview--window-state-sign-generation state))
-           (= scrollview--spell-state-generation
-              (scrollview--window-state-spell-generation state))
-           (= scrollview--diagnostic-state-generation
-              (scrollview--window-state-diagnostic-generation state))))))
-
-(defun scrollview--record-render-state (window)
-  "Record WINDOW's current render inputs without allocating a signature list."
-  (when (window-live-p window)
-    (let* ((buffer (window-buffer window))
-           (state (or (gethash window scrollview--window-render-state)
-                      (let ((new (scrollview--make-window-state)))
-                        (puthash window new scrollview--window-render-state)
-                        new))))
-      (with-current-buffer buffer
-        (setf (scrollview--window-state-buffer state) buffer
-              (scrollview--window-state-tick state)
+      (vector buffer
               (buffer-chars-modified-tick)
-              (scrollview--window-state-start state) (window-start window)
-              (scrollview--window-state-vscroll state) (window-vscroll window t)
-              (scrollview--window-state-hscroll state) (window-hscroll window)
-              (scrollview--window-state-pixel-width state)
+              (window-start window)
+              (window-vscroll window t)
+              (window-hscroll window)
               (window-body-width window t)
-              (scrollview--window-state-pixel-height state)
               (window-body-height window t)
-              (scrollview--window-state-line-height state)
               (scrollview--window-line-height window)
-              (scrollview--window-state-sign-generation state)
               scrollview--sign-cache-generation
-              (scrollview--window-state-spell-generation state)
               scrollview--spell-state-generation
-              (scrollview--window-state-diagnostic-generation state)
-              scrollview--diagnostic-state-generation)))))
-
-(defun scrollview--invalidate-render-state (&optional window)
-  "Drop cached render signatures.
-With WINDOW non-nil, only forget that one window."
-  (if window
-      (remhash window scrollview--window-render-state)
-    (clrhash scrollview--window-render-state)))
+              scrollview--diagnostic-state-generation))))
 
 (defun scrollview--refresh-window (window)
   "Refresh scrollview overlays for WINDOW.
@@ -1205,7 +1150,8 @@ the buffer changes."
                      (scrollview--plan-overlay-targets window slots info)))
               (puthash window overlays scrollview--window-overlays))
           (scrollview--delete-window-overlays window))
-        (scrollview--record-render-state window))
+        (puthash window (scrollview--render-state window)
+                 scrollview--window-render-state))
     (scrollview--delete-window-overlays window)))
 
 (defun scrollview--refresh-now (&optional window scroll)
@@ -1220,7 +1166,8 @@ signature is unchanged from the previous refresh."
           (inhibit-redisplay t))
       (cond
        ((and scroll window)
-        (unless (scrollview--same-render-state-p window)
+        (unless (equal (scrollview--render-state window)
+                       (gethash window scrollview--window-render-state))
           (scrollview--refresh-window window)))
        (t
         (scrollview--sync-faces)
