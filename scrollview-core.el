@@ -35,6 +35,12 @@
                (:constructor scrollview--make-sign-spec))
   id group variant priority bitmap face collector)
 
+(cl-defstruct (scrollview--window-state
+               (:constructor scrollview--make-window-state))
+  "Mutable render state for one window."
+  buffer tick start vscroll hscroll pixel-width pixel-height line-height
+  sign-generation spell-generation diagnostic-generation)
+
 (defvar scrollview--window-overlays (make-hash-table :test #'eq)
   "Hash table mapping windows to their scrollview overlays.")
 
@@ -111,11 +117,7 @@ compute the line number for a different START by scanning only the delta
 between START values instead of rescanning from `point-min'.")
 
 (defvar scrollview--window-render-state (make-hash-table :test #'eq)
-  "Hash table mapping windows to the last rendered scroll signature.
-A signature is (BUFFER TICK WINDOW-START WINDOW-END LINE-HEIGHT
-SIGN-GENERATION).  When `scrollview--after-window-scroll' fires with a
-matching signature the previous overlays are still valid and we skip the
-rebuild.")
+  "Hash table mapping windows to mutable `scrollview--window-state' values.")
 
 (defvar scrollview-mode-map
   (let ((map (make-sparse-keymap)))
@@ -960,23 +962,62 @@ Stale overlays are deleted while building the return value."
     ('info (or (plist-get info :overflow) sign-items))
     (_ (plist-get info :overflow))))
 
-(defun scrollview--render-signature (window)
-  "Return a signature describing WINDOW's current render-relevant state.
-Two equal signatures mean the previously rendered overlays are still
-correct."
+(defun scrollview--same-render-state-p (window)
+  "Return non-nil when WINDOW's render inputs match its recorded state.
+Only constant-time window fields are read.  In particular, this deliberately
+avoids an exact `window-end', whose computation depends on redisplay."
+  (when-let* ((state (and (window-live-p window)
+                          (gethash window scrollview--window-render-state)))
+              (buffer (window-buffer window)))
+    (with-current-buffer buffer
+      (and (eq buffer (scrollview--window-state-buffer state))
+           (= (buffer-chars-modified-tick)
+              (scrollview--window-state-tick state))
+           (= (window-start window)
+              (scrollview--window-state-start state))
+           (= (window-vscroll window t)
+              (scrollview--window-state-vscroll state))
+           (= (window-hscroll window)
+              (scrollview--window-state-hscroll state))
+           (= (window-body-width window t)
+              (scrollview--window-state-pixel-width state))
+           (= (window-body-height window t)
+              (scrollview--window-state-pixel-height state))
+           (= (scrollview--window-line-height window)
+              (scrollview--window-state-line-height state))
+           (= scrollview--sign-cache-generation
+              (scrollview--window-state-sign-generation state))
+           (= scrollview--spell-state-generation
+              (scrollview--window-state-spell-generation state))
+           (= scrollview--diagnostic-state-generation
+              (scrollview--window-state-diagnostic-generation state))))))
+
+(defun scrollview--record-render-state (window)
+  "Record WINDOW's current render inputs without allocating a signature list."
   (when (window-live-p window)
-    (let ((buffer (window-buffer window)))
+    (let* ((buffer (window-buffer window))
+           (state (or (gethash window scrollview--window-render-state)
+                      (let ((new (scrollview--make-window-state)))
+                        (puthash window new scrollview--window-render-state)
+                        new))))
       (with-current-buffer buffer
-        (list buffer
+        (setf (scrollview--window-state-buffer state) buffer
+              (scrollview--window-state-tick state)
               (buffer-chars-modified-tick)
-              (window-start window)
-              (window-end window t)
+              (scrollview--window-state-start state) (window-start window)
+              (scrollview--window-state-vscroll state) (window-vscroll window t)
+              (scrollview--window-state-hscroll state) (window-hscroll window)
+              (scrollview--window-state-pixel-width state)
+              (window-body-width window t)
+              (scrollview--window-state-pixel-height state)
+              (window-body-height window t)
+              (scrollview--window-state-line-height state)
               (scrollview--window-line-height window)
+              (scrollview--window-state-sign-generation state)
               scrollview--sign-cache-generation
-              ;; Per-buffer collector states that drive collector caches —
-              ;; if these tick we cannot reuse the prior render even when
-              ;; window-start is unchanged.
+              (scrollview--window-state-spell-generation state)
               scrollview--spell-state-generation
+              (scrollview--window-state-diagnostic-generation state)
               scrollview--diagnostic-state-generation)))))
 
 (defun scrollview--invalidate-render-state (&optional window)
@@ -1025,10 +1066,7 @@ the buffer changes."
                 (scrollview--delete-unused-overlays by-row spare)
                 (puthash window overlays scrollview--window-overlays)))
           (scrollview--delete-window-overlays window))
-        ;; Stamp the render signature so the scroll fast-path can detect
-        ;; unchanged-state fires and skip the rebuild entirely.
-        (puthash window (scrollview--render-signature window)
-                 scrollview--window-render-state))
+        (scrollview--record-render-state window))
     (scrollview--delete-window-overlays window)))
 
 (defun scrollview--refresh-now (&optional window scroll)
@@ -1043,10 +1081,8 @@ signature is unchanged from the previous refresh."
           (inhibit-redisplay t))
       (cond
        ((and scroll window)
-        (let ((signature (scrollview--render-signature window))
-              (previous (gethash window scrollview--window-render-state)))
-          (unless (and previous (equal signature previous))
-            (scrollview--refresh-window window))))
+        (unless (scrollview--same-render-state-p window)
+          (scrollview--refresh-window window)))
        (t
         (scrollview--sync-faces)
         (scrollview--initialize-builtins)
