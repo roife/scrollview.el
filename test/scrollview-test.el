@@ -896,8 +896,7 @@ When STRING is non-nil, include it as the clicked string object."
           (setq slots
                 (scrollview--build-slots
                  nil info
-                 (list (list :line 3 :spec high)
-                       (list :line 4 :spec low))))
+                 (list (cons 3 high) (cons 4 low))))
           (should (eq (plist-get (aref slots 0) :type) 'scrollbar))
           (should (eq (plist-get (aref slots 2) :type) 'sign))
           (should (plist-get (aref slots 2) :highlighted))
@@ -950,7 +949,7 @@ When STRING is non-nil, include it as the clicked string object."
                  :thumb-top 0 :thumb-size 1))
          (slots (scrollview--build-slots
                  nil info
-                 (list (list :line 5 :spec spec)))))
+                 (list (cons 5 spec)))))
     (should (eq (plist-get (aref slots 4) :type) 'sign))
     (should-not (plist-get (aref slots 4) :highlighted))
     (should (eq (face-attribute (plist-get (aref slots 4) :face)
