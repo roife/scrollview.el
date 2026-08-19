@@ -112,6 +112,9 @@ the cached sign item list and on track geometry, so scrolling can reuse it.")
 (defvar-local scrollview--line-count-cache nil
   "Buffer-local cache of the current line count.")
 
+(defvar-local scrollview--line-change-state nil
+  "Line-count state captured by `scrollview--before-change'.")
+
 (defvar-local scrollview--top-line-cache nil
   "Buffer-local cache of (TICK START . LINE) for `scrollview--window-top-line'.
 TICK is `buffer-chars-modified-tick', START is a buffer position, and LINE is
@@ -155,6 +158,36 @@ between START values instead of rescanning from `point-min'.")
       (let ((count (max 1 (line-number-at-pos (point-max) t))))
         (setq scrollview--line-count-cache (cons tick count))
         count))))
+
+(defun scrollview--count-newlines (start end)
+  "Return the number of newline characters between START and END."
+  (save-excursion
+    (save-restriction
+      (widen)
+      (goto-char start)
+      (let ((count 0))
+        (while (search-forward "\n" end t)
+          (cl-incf count))
+        count))))
+
+(defun scrollview--before-change (start end)
+  "Capture cached line-count information before changing START through END."
+  (let ((tick (buffer-chars-modified-tick)))
+    (setq scrollview--line-change-state
+          (when (and scrollview--line-count-cache
+                     (= tick (car scrollview--line-count-cache)))
+            (vector (cdr scrollview--line-count-cache)
+                    (scrollview--count-newlines start end))))))
+
+(defun scrollview--update-line-count-after-change (start end)
+  "Update the cached line count after newly inserted text START through END."
+  (when scrollview--line-change-state
+    (let ((count (+ (aref scrollview--line-change-state 0)
+                    (- (scrollview--count-newlines start end)
+                       (aref scrollview--line-change-state 1)))))
+      (setq scrollview--line-count-cache
+            (cons (buffer-chars-modified-tick) (max 1 count)))))
+  (setq scrollview--line-change-state nil))
 
 (defun scrollview--collector-cache ()
   "Return the current buffer's collector cache."
@@ -1242,8 +1275,9 @@ relevant has changed since the last refresh."
               (scrollview--tall-image-display-p window))
     (scrollview--refresh-now window 'scroll)))
 
-(defun scrollview--after-change (&rest _)
+(defun scrollview--after-change (start end _old-length)
   "Refresh windows showing the current buffer after buffer changes."
+  (scrollview--update-line-count-after-change start end)
   (scrollview--invalidate-buffer-sign-cache)
   (scrollview--schedule-buffer-refresh))
 
@@ -1493,6 +1527,8 @@ When GROUPS is non-nil, only those sign groups are considered."
         (scrollview--install-global-hooks)
         (add-hook 'window-scroll-functions
                   #'scrollview--after-window-scroll nil t)
+        (add-hook 'before-change-functions
+                  #'scrollview--before-change nil t)
         (add-hook 'after-change-functions
                   #'scrollview--after-change nil t)
         (add-hook 'post-command-hook
@@ -1503,6 +1539,8 @@ When GROUPS is non-nil, only those sign groups are considered."
           (scrollview--schedule-refresh window)))
     (remove-hook 'window-scroll-functions
                  #'scrollview--after-window-scroll t)
+    (remove-hook 'before-change-functions
+                 #'scrollview--before-change t)
     (remove-hook 'after-change-functions
                  #'scrollview--after-change t)
     (remove-hook 'post-command-hook
