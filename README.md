@@ -88,6 +88,10 @@ All built-in groups are enabled by default.  Groups backed by optional packages
 produce signs only when their package is available and has data for the current
 buffer.
 
+The `conflicts` group reuses conflict overlays already created by `smerge-mode`.
+It does not scan buffer text, so it shows only conflicts that smerge has
+discovered.
+
 Enable, disable, or toggle groups at runtime:
 
 ```elisp

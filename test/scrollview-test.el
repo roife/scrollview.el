@@ -1775,6 +1775,12 @@ When STRING is non-nil, include it as the clicked string object."
   (scrollview-test--reset-state)
   (with-temp-buffer
     (insert "ok\n<<<<<<< ours\nleft\n=======\nright\n>>>>>>> theirs\n")
+    ;; Conflict text alone is not scanned; the collector consumes the
+    ;; overlay that smerge creates when it discovers the conflict.
+    (should-not (scrollview--collect-conflict-lines 'top))
+    (require 'smerge-mode)
+    (goto-char (point-min))
+    (should (smerge-find-conflict nil))
     (should (equal (scrollview--collect-conflict-lines 'top) '(2)))
     (should (equal (scrollview--collect-conflict-lines 'middle) '(4)))
     (should (equal (scrollview--collect-conflict-lines 'bottom) '(6)))))

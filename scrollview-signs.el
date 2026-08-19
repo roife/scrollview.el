@@ -19,7 +19,7 @@
 (declare-function flymake-diagnostics "flymake" (&optional beg end))
 (declare-function flymake-diagnostic-beg "flymake" (diag))
 (declare-function flymake-diagnostic-type "flymake" (diag))
-(declare-function smerge-find-conflict "smerge-mode" (&optional limit))
+(declare-function smerge-match-conflict "smerge-mode" ())
 (declare-function hl-todo--search "hl-todo" (&optional regexp bound backward))
 (declare-function diff-hl-changes "diff-hl" ())
 (declare-function diff-hl-changes-from-buffer "diff-hl" (buf))
@@ -551,25 +551,62 @@ literally with `search-forward'."
   "Collect Eglot document-highlight lines."
   (scrollview--eglot-highlight-lines))
 
+(defun scrollview--smerge-conflict-overlays ()
+  "Return existing smerge conflict overlays in the current buffer."
+  (sort
+   (seq-filter
+    (lambda (overlay)
+      (and (overlayp overlay)
+           (eq (overlay-buffer overlay) (current-buffer))
+           (eq (overlay-get overlay 'smerge) 'conflict)
+           (overlay-start overlay)
+           (overlay-end overlay)
+           (<= (point-min) (overlay-start overlay))
+           (<= (overlay-end overlay) (point-max))))
+    (overlays-in (point-min) (point-max)))
+   (lambda (left right)
+     (< (overlay-start left) (overlay-start right)))))
+
+(defun scrollview--smerge-conflict-overlay-token (overlays)
+  "Return a cache token describing smerge conflict OVERLAYS."
+  (mapcar (lambda (overlay)
+            (list (overlay-start overlay) (overlay-end overlay)))
+          overlays))
+
+(defun scrollview--conflict-overlay-lines (overlays)
+  "Return conflict marker lines represented by smerge OVERLAYS."
+  (let (top middle bottom)
+    (dolist (overlay overlays)
+      (let ((start (overlay-start overlay))
+            (end (overlay-end overlay)))
+        (when (and start end (< start end))
+          (save-excursion
+            (save-restriction
+              (save-match-data
+                (narrow-to-region start end)
+                (goto-char (point-min))
+                (condition-case nil
+                    (when (and (fboundp 'smerge-match-conflict)
+                               (smerge-match-conflict))
+                      (push (line-number-at-pos (match-beginning 0) t) top)
+                      (when (match-beginning 5)
+                        (push (line-number-at-pos (match-beginning 5) t)
+                              middle))
+                      (push (line-number-at-pos (match-end 3) t) bottom))
+                  (error nil))))))))
+    (list (cons 'top (scrollview--dedupe-sorted-lines top))
+          (cons 'middle (scrollview--dedupe-sorted-lines middle))
+          (cons 'bottom (scrollview--dedupe-sorted-lines bottom)))))
+
 (defun scrollview--conflict-lines ()
-  "Return smerge conflict marker lines as an alist by variant."
-  (scrollview--cached-collector-value
-   'conflicts
-   (list :tick (buffer-chars-modified-tick))
-   (lambda ()
-     (let (top middle bottom)
-       (when (require 'smerge-mode nil t)
-         (save-excursion
-           (save-match-data
-             (goto-char (point-min))
-             (while (smerge-find-conflict nil)
-               (push (line-number-at-pos (match-beginning 0) t) top)
-               (when (match-beginning 5)
-                 (push (line-number-at-pos (match-beginning 5) t) middle))
-               (push (line-number-at-pos (match-end 3) t) bottom)))))
-       (list (cons 'top (scrollview--dedupe-sorted-lines top))
-             (cons 'middle (scrollview--dedupe-sorted-lines middle))
-             (cons 'bottom (scrollview--dedupe-sorted-lines bottom)))))))
+  "Return marker lines from existing smerge conflict overlays."
+  (let ((overlays (scrollview--smerge-conflict-overlays)))
+    (scrollview--cached-collector-value
+     'conflicts
+     (list :tick (buffer-chars-modified-tick)
+           :overlays (scrollview--smerge-conflict-overlay-token overlays))
+     (lambda ()
+       (scrollview--conflict-overlay-lines overlays)))))
 
 (defun scrollview--collect-conflict-lines (variant &rest _)
   "Collect conflict marker lines for VARIANT."
