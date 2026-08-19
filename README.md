@@ -23,7 +23,8 @@ For one buffer only:
       scrollview-fallback-to-margin t
       scrollview-side 'right
       scrollview-visibility 'always
-      scrollview-signs-on-startup 'all)
+      scrollview-signs-on-startup 'all
+      scrollview-spell-checker 'flyspell)
 ```
 
 Common alternatives:
@@ -34,6 +35,9 @@ Common alternatives:
 
 ;; Start without signs; enable groups later with commands.
 (setq scrollview-signs-on-startup nil)
+
+;; Collect spelling signs from Jinx instead of Flyspell.
+(setq scrollview-spell-checker 'jinx)
 
 ;; Hide signs in very large buffers.
 (setq scrollview-line-limit 20000
@@ -63,6 +67,7 @@ Common alternatives:
 | `scrollview-line-limit` | `20000` | Above this line count, restricted mode disables signs.  Set to `-1` to disable the limit. |
 | `scrollview-byte-limit` | `1000000` | Above this buffer size, restricted mode disables signs.  Set to `-1` to disable the limit. |
 | `scrollview-signs-on-startup` | `all` | Built-in sign groups enabled on first use.  Use `all`, `nil`, or a list of group symbols. |
+| `scrollview-spell-checker` | `flyspell` | Spell checker used by the `spell` sign group.  Use `flyspell` or `jinx`. |
 | `scrollview-refresh-delay` | `0.03` | Idle delay, in seconds, for scheduled refreshes. |
 
 Restricted mode keeps the scrollbar and skips sign collection.
@@ -86,6 +91,9 @@ Restricted mode keeps the scrollbar and skips sign collection.
 All built-in groups are enabled by default.  Groups backed by optional packages
 produce signs only when their package is available and has data for the current
 buffer.
+
+The `spell` group reads overlays from `scrollview-spell-checker`; set it to
+`flyspell` (the default) or `jinx` to match the spell checker you use.
 
 The `conflicts` group reuses conflict overlays already created by `smerge-mode`.
 It does not scan buffer text, so it shows only conflicts that smerge has

@@ -610,8 +610,8 @@ literally with `search-forward'."
   "Collect conflict marker lines for VARIANT."
   (cdr (assq variant (scrollview--conflict-lines))))
 
-(defun scrollview--flyspell-note-update (&rest _)
-  "Invalidate spell signs after Flyspell overlays change."
+(defun scrollview--spell-note-update (&rest _)
+  "Invalidate spell signs after spell checker overlays change."
   (cl-incf scrollview--spell-state-generation)
   (when (bound-and-true-p scrollview-mode)
     (scrollview--invalidate-buffer-sign-cache)
@@ -623,20 +623,31 @@ literally with `search-forward'."
       (and (fboundp 'flyspell-overlay-p)
            (flyspell-overlay-p overlay))))
 
+(defun scrollview--jinx-overlay-p (overlay)
+  "Return non-nil when OVERLAY is owned by Jinx."
+  (eq (overlay-get overlay 'category) 'jinx-overlay))
+
+(defun scrollview--spell-overlay-p (overlay)
+  "Return non-nil when OVERLAY belongs to the selected spell checker."
+  (pcase scrollview-spell-checker
+    ('flyspell (scrollview--flyspell-overlay-p overlay))
+    ('jinx (scrollview--jinx-overlay-p overlay))))
+
 (defun scrollview--spell-lines ()
-  "Return lines containing Flyspell misspelling overlays."
+  "Return lines containing misspellings from the selected spell checker."
   (scrollview--cached-collector-value
    'spell
    (list :tick (buffer-chars-modified-tick)
+         :checker scrollview-spell-checker
          :generation scrollview--spell-state-generation)
    (lambda ()
      (scrollview--dedupe-sorted-lines
       (cl-loop for overlay in (overlays-in (point-min) (point-max))
-               when (scrollview--flyspell-overlay-p overlay)
+               when (scrollview--spell-overlay-p overlay)
                collect (line-number-at-pos (overlay-start overlay) t))))))
 
 (defun scrollview--collect-spell-lines (_window)
-  "Collect spelling error lines from Flyspell overlays."
+  "Collect spelling error lines from the selected spell checker."
   (scrollview--spell-lines))
 
 (defun scrollview--diff-hl-available-p ()
@@ -1036,9 +1047,18 @@ literally with `search-forward'."
                       flyspell-delete-all-overlays
                       flyspell-delete-region-overlays))
     (when (and (fboundp function)
-               (not (advice-member-p #'scrollview--flyspell-note-update
+               (not (advice-member-p #'scrollview--spell-note-update
                                      function)))
-      (advice-add function :after #'scrollview--flyspell-note-update))))
+      (advice-add function :after #'scrollview--spell-note-update))))
+
+(with-eval-after-load 'jinx
+  (dolist (function '(jinx--check-region
+                      jinx--cleanup
+                      jinx--recheck-overlays))
+    (when (and (fboundp function)
+               (not (advice-member-p #'scrollview--spell-note-update
+                                     function)))
+      (advice-add function :after #'scrollview--spell-note-update))))
 
 (defun scrollview--after-diff-hl-update (&rest _)
   "Refresh scrollview signs after diff-hl updates."

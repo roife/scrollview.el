@@ -80,6 +80,14 @@ Use `all' to enable all built-in groups."
                  (repeat :tag "Selected groups" symbol))
   :group 'scrollview)
 
+(defcustom scrollview-spell-checker 'flyspell
+  "Spell checker used to collect spelling signs.
+The value `flyspell' collects misspellings highlighted by Flyspell.  The
+value `jinx' collects misspellings highlighted by Jinx."
+  :type '(choice (const :tag "Flyspell" flyspell)
+                 (const :tag "Jinx" jinx))
+  :group 'scrollview)
+
 (defcustom scrollview-refresh-delay 0.03
   "Idle delay, in seconds, before a scheduled refresh runs."
   :type 'number
