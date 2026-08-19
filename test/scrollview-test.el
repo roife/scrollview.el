@@ -1401,17 +1401,6 @@ When STRING is non-nil, include it as the clicked string object."
     (should (equal called (list window 'scroll)))
     (should-not (gethash window scrollview--scroll-refresh-timers))))
 
-(ert-deftest scrollview-reentrant-refresh-is-coalesced-not-dropped ()
-  (scrollview-test--reset-state)
-  (let ((window (selected-window))
-        (scrollview--refreshing t)
-        scheduled)
-    (cl-letf (((symbol-function 'scrollview--schedule-refresh)
-               (lambda (&optional target)
-                 (setq scheduled target))))
-      (scrollview--refresh-now window 'scroll))
-    (should (eq scheduled window))))
-
 (ert-deftest scrollview-scroll-state-avoids-window-end-and-tracks-pixel-scroll ()
   (scrollview-test--reset-state)
   (scrollview-test--with-displayed-buffer

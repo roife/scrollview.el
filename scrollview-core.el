@@ -1215,10 +1215,7 @@ this is a scroll-driven refresh, which skips the global setup work
 \(face sync, builtin registration, dead-window cleanup) that does not
 depend on scroll position and short-circuits when WINDOW's render
 signature is unchanged from the previous refresh."
-  (if scrollview--refreshing
-      ;; Preserve invalidations raised by overlay or display changes during a
-      ;; refresh.  The existing scheduler coalesces repeated requests.
-      (scrollview--schedule-refresh window)
+  (unless scrollview--refreshing
     (let ((scrollview--refreshing t)
           (inhibit-redisplay t))
       (cond
