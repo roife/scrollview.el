@@ -55,7 +55,7 @@
   (setq scrollview--window-sign-cache (scrollview--make-window-table))
   (setq scrollview--window-sign-row-cache (scrollview--make-window-table))
   (setq scrollview--window-render-state (scrollview--make-window-table))
-  (setq scrollview--display-string-cache (make-hash-table :test #'equal))
+  (setq scrollview--display-string-cache (make-hash-table :test #'eq))
   (setq scrollview--sign-cache-generation 0)
   (setq scrollview--sign-render-face-cache (make-hash-table :test #'equal))
   (setq scrollview--thumb-face-state nil)

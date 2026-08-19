@@ -133,8 +133,8 @@ between START values instead of rescanning from `point-min'.")
 (defvar scrollview--window-render-state (scrollview--make-window-table)
   "Hash table mapping windows to mutable `scrollview--window-state' values.")
 
-(defvar scrollview--display-string-cache (make-hash-table :test #'equal)
-  "Cache of immutable overlay display strings.")
+(defvar scrollview--display-string-cache (make-hash-table :test #'eq)
+  "Nested cache of immutable overlay display strings.")
 
 (defvar scrollview-mode-map
   (let ((map (make-sparse-keymap)))
@@ -873,6 +873,13 @@ unchanged.  A cached sign list keeps its identity across scroll refreshes."
     (`(sign _ _ scrollview-sign-delete-bitmap) "-")
     (_ "*")))
 
+(defun scrollview--display-cache-level (table key test)
+  "Return TABLE's nested hash for KEY, creating it with TEST if absent."
+  (or (gethash key table)
+      (let ((level (make-hash-table :test test)))
+        (puthash key level table)
+        level)))
+
 (defun scrollview--overlay-after-string (slot &optional _target-line)
   "Return the cached, row-independent after-string for SLOT."
   (let* ((face (plist-get slot :face))
@@ -880,8 +887,11 @@ unchanged.  A cached sign list keeps its identity across scroll refreshes."
          (visual (if (scrollview--margin-area-p)
                      (scrollview--margin-glyph slot)
                    (plist-get slot :bitmap)))
-         (key (list side visual face)))
-    (or (gethash key scrollview--display-string-cache)
+         (side-cache (scrollview--display-cache-level
+                      scrollview--display-string-cache side #'equal))
+         (visual-cache (scrollview--display-cache-level
+                        side-cache visual #'equal)))
+    (or (gethash face visual-cache)
         (let* ((display
                 (if (scrollview--margin-area-p)
                     `((margin ,side)
@@ -893,7 +903,7 @@ unchanged.  A cached sign list keeps its identity across scroll refreshes."
                                    'face face
                                    'mouse-face 'highlight
                                    'display display)))
-          (puthash key string scrollview--display-string-cache)
+          (puthash face string visual-cache)
           string))))
 
 (defun scrollview--overlay-help-echo (_window object _position)
