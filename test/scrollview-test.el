@@ -217,7 +217,7 @@ When STRING is non-nil, include it as the clicked string object."
           (should (= (plist-get info :track-lines) 4))
           (should (= (plist-get info :thumb-top) 3)))))))
 
-(ert-deftest scrollview-line-count-follows-edit ()
+(ert-deftest scrollview-line-count-cache-invalidates-on-edit ()
   (with-temp-buffer
     (insert "one\ntwo")
     (should (= (scrollview--line-count) 2))
@@ -225,6 +225,27 @@ When STRING is non-nil, include it as the clicked string object."
     (goto-char (point-max))
     (insert "\nthree")
     (should (= (scrollview--line-count) 3))))
+
+(ert-deftest scrollview-line-count-cache-updates-incrementally ()
+  (scrollview-test--reset-state)
+  (scrollview-test--with-displayed-buffer
+    (insert "one\ntwo\nthree")
+    (let ((scrollview-signs-on-startup nil)
+          (scans 0))
+      (scrollview-mode 1)
+      (should (= (scrollview--line-count) 3))
+      (let ((line-number (symbol-function 'line-number-at-pos)))
+        (cl-letf (((symbol-function 'line-number-at-pos)
+                   (lambda (&rest args)
+                     (cl-incf scans)
+                     (apply line-number args))))
+          (goto-char (point-max))
+          (insert "\nfour\nfive")
+          (should (= (scrollview--line-count) 5))
+          (goto-char (point-min))
+          (delete-region (point) (line-beginning-position 3))
+          (should (= (scrollview--line-count) 3))))
+      (should (= scans 0)))))
 
 (ert-deftest scrollview-search-scan-keeps-absolute-lines-when-narrowed ()
   (with-temp-buffer

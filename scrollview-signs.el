@@ -118,7 +118,8 @@ decided by the presence of live isearch lazy highlight overlays."
   "Return buffer lines matching PATTERN.
 When REGEXP is non-nil, search with `re-search-forward'; otherwise search
 literally with `search-forward'."
-  (let (lines)
+  (let ((tracker (scrollview--make-line-tracker))
+        lines)
     (save-excursion
       (save-match-data
         (goto-char (point-min))
@@ -127,7 +128,8 @@ literally with `search-forward'."
               (while (if regexp
                          (re-search-forward pattern nil t)
                        (search-forward pattern nil t))
-                (let ((line (line-number-at-pos (match-beginning 0) t)))
+                (let ((line (scrollview--tracked-line-number
+                             (match-beginning 0) tracker)))
                   (unless (and lines (= line (car lines)))
                     (push line lines)))
                 (when (= (match-beginning 0) (match-end 0))
