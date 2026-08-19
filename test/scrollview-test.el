@@ -1483,6 +1483,28 @@ When STRING is non-nil, include it as the clicked string object."
                             (gethash (selected-window)
                                      scrollview--window-overlays))))))))
 
+(ert-deftest scrollview-unchanged-refresh-skips-overlay-property-writes ()
+  (scrollview-test--reset-state)
+  (scrollview-test--with-displayed-buffer
+    (scrollview-test--insert-lines 200)
+    (let ((window (selected-window))
+          (scrollview-visibility 'overflow)
+          (scrollview-signs-on-startup nil)
+          (scrollview-line-limit -1)
+          (scrollview-byte-limit -1)
+          (writes 0))
+      (cl-letf (((symbol-function 'scrollview--fringe-available-p)
+                 (lambda (_window) t)))
+        (scrollview-mode 1)
+        (scrollview-refresh window)
+        (let ((put (symbol-function 'overlay-put)))
+          (cl-letf (((symbol-function 'overlay-put)
+                     (lambda (&rest args)
+                       (cl-incf writes)
+                       (apply put args))))
+            (scrollview-refresh window)))
+        (should (= writes 0))))))
+
 (ert-deftest scrollview-buffer-change-invalidates-sign-cache ()
   (scrollview-test--reset-state)
   (scrollview-test--with-displayed-buffer
