@@ -1380,6 +1380,33 @@ When STRING is non-nil, include it as the clicked string object."
                      '((0 . top) (3 . middle) (8 . bottom))))
       (should (= motions 2)))))
 
+(ert-deftest scrollview-overlay-planning-precedes-all-writes ()
+  (scrollview-test--reset-state)
+  (scrollview-test--with-displayed-buffer
+    (scrollview-test--insert-lines 20)
+    (let* ((window (selected-window))
+           (slots (make-vector 10 nil))
+           (info '(:window-lines 10 :track-lines 10 :buffer-lines 20))
+           events)
+      (aset slots 3 '(:type scrollbar :face scrollview-thumb-face
+                      :bitmap filled-rectangle))
+      (aset slots 8 '(:type scrollbar :face scrollview-thumb-face
+                      :bitmap filled-rectangle))
+      (let ((motion (symbol-function 'vertical-motion))
+            (update (symbol-function 'scrollview--update-overlay-at-point)))
+        (cl-letf (((symbol-function 'vertical-motion)
+                   (lambda (&rest args)
+                     (push 'read events)
+                     (apply motion args)))
+                  ((symbol-function 'scrollview--update-overlay-at-point)
+                   (lambda (&rest args)
+                     (push 'write events)
+                     (apply update args))))
+          (scrollview--apply-overlay-targets
+           window (scrollview--plan-overlay-targets window slots info))))
+      (setq events (nreverse events))
+      (should (equal events '(read read write write))))))
+
 (ert-deftest scrollview-scroll-refresh-reuses-sign-cache ()
   (scrollview-test--reset-state)
   (scrollview-test--with-displayed-buffer

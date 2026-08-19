@@ -949,6 +949,18 @@ active row instead of restarting at `window-start'."
                         (funcall function row (point) slot))
                       (setq current-row row)))))))
 
+(defun scrollview--plan-overlay-targets (window slots info)
+  "Return desired overlay targets for WINDOW, SLOTS, and INFO.
+All display-position reads finish before any overlay is moved or modified."
+  (let (targets)
+    (scrollview--visit-active-rows
+     window slots
+     (lambda (row position slot)
+       (push (vector row position slot
+                     (scrollview--target-line-for-row slot row info))
+             targets)))
+    (nreverse targets)))
+
 (defun scrollview--current-window-overlays (window)
   "Return reusable overlays for WINDOW as (BY-ROW SPARE).
 Stale overlays are deleted while building the return value."
@@ -972,6 +984,32 @@ Stale overlays are deleted while building the return value."
              (delete-overlay overlay))
            by-row)
   (mapc #'delete-overlay spare))
+
+(defun scrollview--apply-overlay-targets (window targets)
+  "Apply precomputed TARGETS to WINDOW and return its active overlays."
+  (pcase-let ((`(,by-row ,spare)
+               (scrollview--current-window-overlays window)))
+    (let ((buffer (window-buffer window))
+          overlays)
+      (dolist (target targets)
+        (let* ((row (aref target 0))
+               (position (aref target 1))
+               (slot (aref target 2))
+               (target-line (aref target 3))
+               (same-row-overlay (gethash row by-row))
+               (overlay (or same-row-overlay
+                            (pop spare)
+                            (make-overlay position position buffer))))
+          (when same-row-overlay
+            (remhash row by-row))
+          (with-current-buffer buffer
+            (save-excursion
+              (goto-char position)
+              (push (scrollview--update-overlay-at-point
+                     overlay window row slot target-line)
+                    overlays)))))
+      (scrollview--delete-unused-overlays by-row spare)
+      overlays)))
 
 (defun scrollview--should-render-p (info sign-items)
   "Return non-nil if INFO and SIGN-ITEMS should be rendered."
@@ -1056,26 +1094,11 @@ the buffer changes."
             (let ((slots (scrollview--build-slots window info sign-items))
                   overlays)
               (scrollview--prepare-window-display-area window)
-              (pcase-let ((`(,by-row ,spare)
-                           (scrollview--current-window-overlays window)))
-                (scrollview--visit-active-rows
-                 window slots
-                 (lambda (row position slot)
-                   (let* ((target-line
-                           (scrollview--target-line-for-row slot row info))
-                          (same-row-overlay (gethash row by-row))
-                          (overlay (or same-row-overlay
-                                       (pop spare)
-                                       (make-overlay position position))))
-                     (when same-row-overlay
-                       (remhash row by-row))
-                     (save-excursion
-                       (goto-char position)
-                       (push (scrollview--update-overlay-at-point
-                              overlay window row slot target-line)
-                             overlays)))))
-                (scrollview--delete-unused-overlays by-row spare)
-                (puthash window overlays scrollview--window-overlays)))
+              (setq overlays
+                    (scrollview--apply-overlay-targets
+                     window
+                     (scrollview--plan-overlay-targets window slots info)))
+              (puthash window overlays scrollview--window-overlays))
           (scrollview--delete-window-overlays window))
         (scrollview--record-render-state window))
     (scrollview--delete-window-overlays window)))
