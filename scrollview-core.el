@@ -44,6 +44,9 @@
 (defvar scrollview--window-overlays (make-hash-table :test #'eq)
   "Hash table mapping windows to their scrollview overlays.")
 
+(defvar scrollview--window-overlay-pools (make-hash-table :test #'eq)
+  "Hash table mapping windows to detached reusable overlays.")
+
 (defvar scrollview--window-margins (make-hash-table :test #'eq)
   "Hash table mapping windows to margins saved before scrollview changed them.")
 
@@ -398,6 +401,10 @@ unsupported display layout."
                (unless (window-live-p window)
                  (cl-pushnew window dead :test #'eq)))
              scrollview--window-sign-row-cache)
+    (maphash (lambda (window _pool)
+               (unless (window-live-p window)
+                 (cl-pushnew window dead :test #'eq)))
+             scrollview--window-overlay-pools)
     (maphash (lambda (window _margins)
                (unless (window-live-p window)
                  (cl-pushnew window dead :test #'eq)))
@@ -409,9 +416,10 @@ unsupported display layout."
 
 (defun scrollview--delete-window-overlays (window)
   "Delete scrollview overlays for WINDOW."
-  (when-let* ((overlays (gethash window scrollview--window-overlays)))
-    (mapc #'delete-overlay overlays)
-    (remhash window scrollview--window-overlays))
+  (mapc #'delete-overlay (gethash window scrollview--window-overlays))
+  (mapc #'delete-overlay (gethash window scrollview--window-overlay-pools))
+  (remhash window scrollview--window-overlays)
+  (remhash window scrollview--window-overlay-pools)
   (remhash window scrollview--window-render-state)
   (remhash window scrollview--window-sign-row-cache)
   (scrollview--restore-window-margins window))
@@ -1006,10 +1014,11 @@ All display-position reads finish before any overlay is moved or modified."
 
 (defun scrollview--current-window-overlays (window)
   "Return reusable overlays for WINDOW as (BY-ROW SPARE).
-Stale overlays are deleted while building the return value."
+Detached overlays from the window's free pool are returned as SPARE."
   (let ((buffer (window-buffer window))
         (by-row (make-hash-table :test #'eql))
-        spare)
+        (spare (gethash window scrollview--window-overlay-pools)))
+    (remhash window scrollview--window-overlay-pools)
     (dolist (overlay (gethash window scrollview--window-overlays))
       (if (and (overlayp overlay)
                (eq (overlay-buffer overlay) buffer))
@@ -1018,15 +1027,24 @@ Stale overlays are deleted while building the return value."
                      (not (gethash row by-row)))
                 (puthash row overlay by-row)
               (push overlay spare)))
-        (delete-overlay overlay)))
+        (when (overlayp overlay)
+          (delete-overlay overlay)
+          (push overlay spare))))
     (list by-row spare)))
 
-(defun scrollview--delete-unused-overlays (by-row spare)
-  "Delete overlays left unused in BY-ROW and SPARE."
+(defun scrollview--pool-unused-overlays (window by-row spare)
+  "Detach overlays unused by WINDOW and retain them in its free pool."
+  (let (pool)
   (maphash (lambda (_row overlay)
-             (delete-overlay overlay))
+               (delete-overlay overlay)
+               (push overlay pool))
            by-row)
-  (mapc #'delete-overlay spare))
+    (dolist (overlay spare)
+      (delete-overlay overlay)
+      (push overlay pool))
+    (if pool
+        (puthash window pool scrollview--window-overlay-pools)
+      (remhash window scrollview--window-overlay-pools))))
 
 (defun scrollview--apply-overlay-targets (window targets)
   "Apply precomputed TARGETS to WINDOW and return its active overlays."
@@ -1051,7 +1069,7 @@ Stale overlays are deleted while building the return value."
               (push (scrollview--update-overlay-at-point
                      overlay window row slot target-line)
                     overlays)))))
-      (scrollview--delete-unused-overlays by-row spare)
+      (scrollview--pool-unused-overlays window by-row spare)
       overlays)))
 
 (defun scrollview--should-render-p (info sign-items)

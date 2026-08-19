@@ -49,6 +49,7 @@
              (mapc #'delete-overlay overlays))
            scrollview--window-overlays)
   (setq scrollview--window-overlays (make-hash-table :test #'eq))
+  (setq scrollview--window-overlay-pools (make-hash-table :test #'eq))
   (setq scrollview--pending-windows (make-hash-table :test #'eq))
   (setq scrollview--pending-all nil)
   (when (timerp scrollview--refresh-timer)

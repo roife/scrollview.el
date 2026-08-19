@@ -22,6 +22,7 @@
     (dolist (window windows)
       (scrollview--restore-window-margins window)))
   (setq scrollview--window-overlays (make-hash-table :test #'eq))
+  (setq scrollview--window-overlay-pools (make-hash-table :test #'eq))
   (setq scrollview--window-margins (make-hash-table :test #'eq))
   (setq scrollview--pending-windows (make-hash-table :test #'eq))
   (setq scrollview--pending-all nil)
@@ -1486,6 +1487,45 @@ When STRING is non-nil, include it as the clicked string object."
           (should (cl-every #'eq overlays
                             (gethash (selected-window)
                                      scrollview--window-overlays))))))))
+
+(ert-deftest scrollview-overlay-pool-reuses-temporarily-unused-overlays ()
+  (scrollview-test--reset-state)
+  (scrollview-test--with-displayed-buffer
+    (scrollview-test--insert-lines 20)
+    (let* ((window (selected-window))
+           (slot '(:type scrollbar :face scrollview-thumb-face
+                   :bitmap filled-rectangle))
+           (first (vector 0 (point-min) slot 1))
+           (second (vector 1 (save-excursion
+                               (goto-char (point-min))
+                               (forward-line 1)
+                               (point))
+                           slot 2)))
+      (puthash window
+               (scrollview--apply-overlay-targets window (list first second))
+               scrollview--window-overlays)
+      (let ((objects (copy-sequence
+                      (gethash window scrollview--window-overlays))))
+        (puthash window
+                 (scrollview--apply-overlay-targets window (list first))
+                 scrollview--window-overlays)
+        (should (= (length (gethash window scrollview--window-overlay-pools))
+                   1))
+        (let ((created 0)
+              (make (symbol-function 'make-overlay)))
+          (cl-letf (((symbol-function 'make-overlay)
+                     (lambda (&rest args)
+                       (cl-incf created)
+                       (apply make args))))
+            (puthash window
+                     (scrollview--apply-overlay-targets
+                      window (list first second))
+                     scrollview--window-overlays))
+          (should (= created 0)))
+        (should (cl-every
+                 (lambda (overlay)
+                   (memq overlay (gethash window scrollview--window-overlays)))
+                 objects))))))
 
 (ert-deftest scrollview-unchanged-refresh-skips-overlay-property-writes ()
   (scrollview-test--reset-state)
