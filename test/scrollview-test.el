@@ -55,7 +55,7 @@
   (setq scrollview--window-sign-cache (scrollview--make-window-table))
   (setq scrollview--window-sign-row-cache (scrollview--make-window-table))
   (setq scrollview--window-render-state (scrollview--make-window-table))
-  (setq scrollview--display-string-cache (make-hash-table :test #'eq))
+  (setq scrollview--display-string-cache (make-hash-table :test #'equal))
   (setq scrollview--sign-cache-generation 0)
   (setq scrollview--sign-render-face-cache (make-hash-table :test #'equal))
   (setq scrollview--thumb-face-state nil)
@@ -1415,29 +1415,6 @@ When STRING is non-nil, include it as the clicked string object."
           (should (equal state (scrollview--render-state window)))
           (setq vscroll 1)
           (should-not (equal state (scrollview--render-state window))))))))
-
-(ert-deftest scrollview-visit-active-rows-skips-empty-rows ()
-  (scrollview-test--reset-state)
-  (scrollview-test--with-displayed-buffer
-    (scrollview-test--insert-lines 20)
-    (let ((slots (make-vector 10 nil))
-          (motions 0)
-          visited)
-      (aset slots 0 'top)
-      (aset slots 3 'middle)
-      (aset slots 8 'bottom)
-      (let ((original (symbol-function 'vertical-motion)))
-        (cl-letf (((symbol-function 'vertical-motion)
-                   (lambda (lines &optional window cur-col)
-                     (cl-incf motions)
-                     (funcall original lines window cur-col))))
-          (scrollview--visit-active-rows
-           (selected-window) slots
-           (lambda (row _position slot)
-             (push (cons row slot) visited)))))
-      (should (equal (nreverse visited)
-                     '((0 . top) (3 . middle) (8 . bottom))))
-      (should (= motions 2)))))
 
 (ert-deftest scrollview-overlay-planning-precedes-all-writes ()
   (scrollview-test--reset-state)

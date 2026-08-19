@@ -127,8 +127,8 @@ between START values instead of rescanning from `point-min'.")
 (defvar scrollview--window-render-state (scrollview--make-window-table)
   "Hash table mapping windows to their last rendered state.")
 
-(defvar scrollview--display-string-cache (make-hash-table :test #'eq)
-  "Nested cache of immutable overlay display strings.")
+(defvar scrollview--display-string-cache (make-hash-table :test #'equal)
+  "Cache of immutable overlay display strings.")
 
 (defvar scrollview-mode-map
   (let ((map (make-sparse-keymap)))
@@ -855,13 +855,6 @@ unchanged.  A cached sign list keeps its identity across scroll refreshes."
                             :highlighted highlighted))))))))
     slots))
 
-(defun scrollview--overlay-position-at-point ()
-  "Return the buffer position for a scrollview overlay at point."
-  (let ((pos (point)))
-    (if (= pos (line-end-position))
-        pos
-      (min (point-max) (1+ pos)))))
-
 (defun scrollview--overlay-display-side ()
   "Return the display side for `scrollview-area' and `scrollview-side'."
   (if (scrollview--margin-area-p)
@@ -892,13 +885,6 @@ unchanged.  A cached sign list keeps its identity across scroll refreshes."
     (`(sign _ _ scrollview-sign-delete-bitmap) "-")
     (_ "*")))
 
-(defun scrollview--display-cache-level (table key test)
-  "Return TABLE's nested hash for KEY, creating it with TEST if absent."
-  (or (gethash key table)
-      (let ((level (make-hash-table :test test)))
-        (puthash key level table)
-        level)))
-
 (defun scrollview--overlay-after-string (slot &optional _target-line)
   "Return the cached, row-independent after-string for SLOT."
   (let* ((face (plist-get slot :face))
@@ -906,11 +892,8 @@ unchanged.  A cached sign list keeps its identity across scroll refreshes."
          (visual (if (scrollview--margin-area-p)
                      (scrollview--margin-glyph slot)
                    (plist-get slot :bitmap)))
-         (side-cache (scrollview--display-cache-level
-                      scrollview--display-string-cache side #'equal))
-         (visual-cache (scrollview--display-cache-level
-                        side-cache visual #'equal)))
-    (or (gethash face visual-cache)
+         (key (list side visual face)))
+    (or (gethash key scrollview--display-string-cache)
         (let* ((display
                 (if (scrollview--margin-area-p)
                     `((margin ,side)
@@ -922,7 +905,7 @@ unchanged.  A cached sign list keeps its identity across scroll refreshes."
                                    'face face
                                    'mouse-face 'highlight
                                    'display display)))
-          (puthash face string visual-cache)
+          (puthash key string scrollview--display-string-cache)
           string))))
 
 (defun scrollview--overlay-help-echo (_window object _position)
@@ -936,7 +919,10 @@ unchanged.  A cached sign list keeps its identity across scroll refreshes."
 
 (defun scrollview--update-overlay-at-point (overlay window row slot target-line)
   "Move and update OVERLAY for WINDOW, ROW, SLOT, and TARGET-LINE."
-  (let* ((pos (scrollview--overlay-position-at-point))
+  (let* ((point (point))
+         (pos (if (= point (line-end-position))
+                  point
+                (min (point-max) (1+ point))))
          (after-string (scrollview--overlay-after-string slot))
          (type (plist-get slot :type))
          (group (plist-get slot :group)))
@@ -967,85 +953,46 @@ unchanged.  A cached sign list keeps its identity across scroll refreshes."
       (overlay-put overlay 'scrollview-row row))
     overlay))
 
-(defun scrollview--target-line-for-row (slot row info)
-  "Return the click target line for SLOT at ROW using INFO."
-  (or (plist-get slot :line)
-      (scrollview--row-to-line
-       row
-       (or (plist-get info :track-lines)
-           (plist-get info :window-lines))
-       (plist-get info :buffer-lines))))
-
-(defun scrollview--visit-active-rows (window slots function)
-  "Call FUNCTION with ROW and position for non-nil SLOTS in WINDOW.
-Rows are visited from top to bottom, so display motion resumes from the last
-active row instead of restarting at `window-start'."
-  (with-current-buffer (window-buffer window)
-    (save-restriction
-      (save-excursion
-        (goto-char (window-start window))
-        (cl-loop with current-row = 0
-                 for row from 0 below (length slots)
-                 for slot = (aref slots row)
-                 when slot
-                 do (let ((distance (- row current-row)))
-                      (when (or (zerop distance)
-                                (= (vertical-motion distance window) distance))
-                        (funcall function row (point) slot))
-                      (setq current-row row)))))))
-
 (defun scrollview--plan-overlay-targets (window slots info)
   "Return desired overlay targets for WINDOW, SLOTS, and INFO.
 All display-position reads finish before any overlay is moved or modified."
   (let (targets)
-    (scrollview--visit-active-rows
-     window slots
-     (lambda (row position slot)
-       (push (vector row position slot
-                     (scrollview--target-line-for-row slot row info))
-             targets)))
+    (with-current-buffer (window-buffer window)
+      (save-restriction
+        (save-excursion
+          (goto-char (window-start window))
+          (cl-loop with current-row = 0
+                   for row from 0 below (length slots)
+                   for slot = (aref slots row)
+                   when slot
+                   do (let ((distance (- row current-row)))
+                        (when (or (zerop distance)
+                                  (= (vertical-motion distance window) distance))
+                          (push
+                           (vector
+                            row (point) slot
+                            (or (plist-get slot :line)
+                                (scrollview--row-to-line
+                                 row
+                                 (or (plist-get info :track-lines)
+                                     (plist-get info :window-lines))
+                                 (plist-get info :buffer-lines))))
+                           targets))
+                        (setq current-row row))))))
     (nreverse targets)))
-
-(defun scrollview--current-window-overlays (window)
-  "Return reusable overlays for WINDOW as (BY-ROW SPARE).
-Detached overlays from the window's free pool are returned as SPARE."
-  (let ((buffer (window-buffer window))
-        (by-row (make-hash-table :test #'eql))
-        (spare (gethash window scrollview--window-overlay-pools)))
-    (remhash window scrollview--window-overlay-pools)
-    (dolist (overlay (gethash window scrollview--window-overlays))
-      (if (and (overlayp overlay)
-               (eq (overlay-buffer overlay) buffer))
-          (let ((row (overlay-get overlay 'scrollview-row)))
-            (if (and (integerp row)
-                     (not (gethash row by-row)))
-                (puthash row overlay by-row)
-              (push overlay spare)))
-        (when (overlayp overlay)
-          (delete-overlay overlay)
-          (push overlay spare))))
-    (list by-row spare)))
-
-(defun scrollview--pool-unused-overlays (window by-row spare)
-  "Detach overlays unused by WINDOW and retain them in its free pool."
-  (let (pool)
-  (maphash (lambda (_row overlay)
-               (delete-overlay overlay)
-               (push overlay pool))
-           by-row)
-    (dolist (overlay spare)
-      (delete-overlay overlay)
-      (push overlay pool))
-    (if pool
-        (puthash window pool scrollview--window-overlay-pools)
-      (remhash window scrollview--window-overlay-pools))))
 
 (defun scrollview--apply-overlay-targets (window targets)
   "Apply precomputed TARGETS to WINDOW and return its active overlays."
-  (pcase-let ((`(,by-row ,spare)
-               (scrollview--current-window-overlays window)))
-    (let ((buffer (window-buffer window))
-          overlays)
+  (let ((buffer (window-buffer window))
+        (by-row (make-hash-table :test #'eql))
+        (spare (gethash window scrollview--window-overlay-pools))
+        overlays)
+    (remhash window scrollview--window-overlay-pools)
+    (dolist (overlay (gethash window scrollview--window-overlays))
+      (if (eq (overlay-buffer overlay) buffer)
+          (puthash (overlay-get overlay 'scrollview-row) overlay by-row)
+        (delete-overlay overlay)
+        (push overlay spare)))
       (dolist (target targets)
         (let* ((row (aref target 0))
                (position (aref target 1))
@@ -1063,8 +1010,18 @@ Detached overlays from the window's free pool are returned as SPARE."
               (push (scrollview--update-overlay-at-point
                      overlay window row slot target-line)
                     overlays)))))
-      (scrollview--pool-unused-overlays window by-row spare)
-      overlays)))
+    (let (pool)
+      (maphash (lambda (_row overlay)
+                 (delete-overlay overlay)
+                 (push overlay pool))
+               by-row)
+      (dolist (overlay spare)
+        (delete-overlay overlay)
+        (push overlay pool))
+      (if pool
+          (puthash window pool scrollview--window-overlay-pools)
+        (remhash window scrollview--window-overlay-pools)))
+    overlays))
 
 (defun scrollview--should-render-p (info sign-items)
   "Return non-nil if INFO and SIGN-ITEMS should be rendered."
