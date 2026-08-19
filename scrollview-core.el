@@ -694,29 +694,42 @@ GROUPS may be nil, a symbol, or a list of symbols."
          scrollview--sign-specs)))
     (nreverse items)))
 
-(defun scrollview--sign-cache-token (window)
-  "Return a cache token for sign items in WINDOW."
+(defun scrollview--sign-cache-valid-p (window entry)
+  "Return non-nil when WINDOW still matches sign cache ENTRY."
+  (let ((buffer (window-buffer window)))
+    (with-current-buffer buffer
+      (and entry
+           (= scrollview--sign-cache-generation
+              (plist-get entry :generation))
+           (eq buffer (plist-get entry :buffer))
+           (= (buffer-chars-modified-tick) (plist-get entry :tick))
+           (eq (scrollview--restricted-p) (plist-get entry :restricted))
+           (eql (and (scrollview-sign-group-active-p 'spell)
+                     scrollview--spell-state-generation)
+                (plist-get entry :spell))))))
+
+(defun scrollview--make-sign-cache-entry (window items)
+  "Return a sign cache entry for WINDOW containing ITEMS."
   (let ((buffer (window-buffer window)))
     (with-current-buffer buffer
       (list :generation scrollview--sign-cache-generation
             :buffer buffer
             :tick (buffer-chars-modified-tick)
             :restricted (scrollview--restricted-p)
-            :spell (when (scrollview-sign-group-active-p 'spell)
-                     scrollview--spell-state-generation)))))
+            :spell (and (scrollview-sign-group-active-p 'spell)
+                        scrollview--spell-state-generation)
+            :items items))))
 
 (defun scrollview--collect-sign-items-cached (window)
-  "Collect sign items for WINDOW, using the token-keyed cache."
-  (let* ((token (scrollview--sign-cache-token window))
-         (entry (gethash window scrollview--window-sign-cache)))
-    (if (and entry (equal token (plist-get entry :token)))
+  "Collect sign items for WINDOW, comparing cached fields without allocation."
+  (let ((entry (gethash window scrollview--window-sign-cache)))
+    (if (scrollview--sign-cache-valid-p window entry)
         (plist-get entry :items)
       (let ((items (scrollview--collect-sign-items window)))
-        ;; Collectors may syntax-propertize the buffer.  Store the token after
+        ;; Collectors may syntax-propertize the buffer.  Store state after
         ;; collection so those internal text-property changes do not force an
         ;; otherwise identical second collection on the next refresh.
-        (setq token (scrollview--sign-cache-token window))
-        (puthash window (list :token token :items items)
+        (puthash window (scrollview--make-sign-cache-entry window items)
                  scrollview--window-sign-cache)
         items))))
 
@@ -764,13 +777,16 @@ unchanged.  A cached sign list keeps its identity across scroll refreshes."
              (= track-lines (plist-get entry :track-lines))
              (= buffer-lines (plist-get entry :buffer-lines)))
         (plist-get entry :candidates)
-      (let ((candidates (make-vector window-lines nil)))
+      (let ((candidates (make-vector window-lines nil))
+            active-rows)
         (dolist (item sign-items)
           (let* ((row (scrollview--line-to-row
                        (scrollview--sign-item-line item)
                        track-lines buffer-lines))
                  (old (aref candidates row)))
             (when (scrollview--sign-item-better-p item old)
+              (unless old
+                (push row active-rows))
               (aset candidates row item))))
         (when window
           (puthash window
@@ -778,9 +794,19 @@ unchanged.  A cached sign list keeps its identity across scroll refreshes."
                          :window-lines window-lines
                          :track-lines track-lines
                          :buffer-lines buffer-lines
-                         :candidates candidates)
+                         :candidates candidates
+                         :active-rows (sort active-rows #'<))
                    scrollview--window-sign-row-cache))
         candidates))))
+
+(defun scrollview--sign-active-rows (window candidates)
+  "Return rows containing non-nil CANDIDATES for WINDOW."
+  (let ((entry (and window (gethash window scrollview--window-sign-row-cache))))
+    (if (and entry (eq candidates (plist-get entry :candidates)))
+        (plist-get entry :active-rows)
+      (cl-loop for row from 0 below (length candidates)
+               when (aref candidates row)
+               collect row))))
 
 (defun scrollview--build-slots (window info sign-items)
   "Return display slots using INFO and SIGN-ITEMS."
@@ -790,6 +816,8 @@ unchanged.  A cached sign list keeps its identity across scroll refreshes."
          (candidates (and sign-items
                           (scrollview--sign-row-candidates
                            window info sign-items)))
+         (active-rows (and candidates
+                           (scrollview--sign-active-rows window candidates)))
          (slots (make-vector window-lines nil)))
     (dotimes (offset thumb-size)
       (let ((row (+ thumb-top offset)))
@@ -801,7 +829,7 @@ unchanged.  A cached sign list keeps its identity across scroll refreshes."
                       :bitmap 'filled-rectangle
                       :face 'scrollview-thumb-face)))))
     (when candidates
-      (dotimes (row window-lines)
+      (dolist (row active-rows)
         (when-let* ((item (aref candidates row))
                     (line (scrollview--sign-item-line item)))
           (let* ((spec (scrollview--sign-item-spec item))

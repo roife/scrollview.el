@@ -889,6 +889,10 @@ When STRING is non-nil, include it as the clicked string object."
                  (apply original args))))
       (scrollview--build-slots window info items)
       (should (= calls 2))
+      (should (equal (plist-get
+                      (gethash window scrollview--window-sign-row-cache)
+                      :active-rows)
+                     '(0 4)))
       (scrollview--build-slots window info items)
       (should (= calls 2))
       (scrollview--build-slots
