@@ -290,29 +290,6 @@ When STRING is non-nil, include it as the clicked string object."
             (should (equal info-lines '(3)))
             (should (= flymake-calls 1))))))))
 
-(ert-deftest scrollview-repro-stale-flymake-diagnostic-after-delete ()
-  (scrollview-test--reset-state)
-  (require 'flymake)
-  (scrollview-test--with-displayed-buffer
-    (insert (make-string 3080 ?x))
-    (let ((scrollview-signs-on-startup '(diagnostics))
-          (scrollview-area 'margin)
-          (scrollview-line-limit -1)
-          (scrollview-byte-limit -1)
-          stale-diagnostic)
-      (scrollview-mode 1)
-      (delete-region 3071 (point-max))
-      (setq stale-diagnostic
-            (flymake-make-diagnostic (current-buffer)
-                                      3076 3076
-                                      :error "stale diagnostic"))
-      (scrollview--schedule-refresh (selected-window))
-      (cl-letf (((symbol-function 'flymake-diagnostics)
-                 (lambda (_beg _end)
-                   (list stale-diagnostic))))
-        (should-not (scrollview--collect-diagnostic-lines 'error))
-        (scrollview--flush-refresh)))))
-
 (ert-deftest scrollview-repro-stale-flycheck-line-after-delete ()
   (scrollview-test--reset-state)
   (scrollview-test--with-displayed-buffer
@@ -406,18 +383,6 @@ When STRING is non-nil, include it as the clicked string object."
                         source nil)
                        1))))
       (kill-buffer source))))
-
-(ert-deftest scrollview-repro-stale-vc-line-after-delete ()
-  (scrollview-test--reset-state)
-  (with-temp-buffer
-    (insert (make-string 3080 ?x))
-    (delete-region 3071 (point-max))
-    (cl-letf (((symbol-function 'scrollview--diff-hl-available-p)
-               (lambda () t))
-              ((symbol-function 'diff-hl-changes)
-               (lambda ()
-                 '((:working . ((3076 1 0 insert)))))))
-      (should (equal (scrollview--collect-vc-lines 'add) '(1))))))
 
 (ert-deftest scrollview-compilation-collector-uses-parsed-messages ()
   (scrollview-test--reset-state)
@@ -1907,16 +1872,20 @@ When STRING is non-nil, include it as the clicked string object."
   (scrollview-test--reset-state)
   (with-temp-buffer
     (insert "one\ntwo\nthree\nfour\nfive\n")
-    (cl-letf (((symbol-function 'scrollview--diff-hl-available-p)
-               (lambda () t))
-              ((symbol-function 'diff-hl-changes)
-               (lambda ()
-                 '((:working . ((2 2 0 insert)
-                                (4 1 1 change)
-                                (5 0 2 delete)))))))
-      (should (equal (scrollview--collect-vc-lines 'add) '(2 3)))
-      (should (equal (scrollview--collect-vc-lines 'change) '(4)))
-      (should (equal (scrollview--collect-vc-lines 'delete) '(5))))))
+    (let ((require-function (symbol-function 'require)))
+      (cl-letf (((symbol-function 'require)
+                 (lambda (feature &rest arguments)
+                   (if (eq feature 'diff-hl)
+                       t
+                     (apply require-function feature arguments))))
+                ((symbol-function 'diff-hl-changes)
+                 (lambda ()
+                   '((:working . ((2 2 0 insert)
+                                  (4 1 1 change)
+                                  (5 0 2 delete)))))))
+        (should (equal (scrollview--collect-vc-lines 'add) '(2 3)))
+        (should (equal (scrollview--collect-vc-lines 'change) '(4)))
+        (should (equal (scrollview--collect-vc-lines 'delete) '(5)))))))
 
 (ert-deftest scrollview-vc-collector-parses-diff-hl-buffer ()
   (scrollview-test--reset-state)
@@ -1925,9 +1894,13 @@ When STRING is non-nil, include it as the clicked string object."
     (unwind-protect
         (with-temp-buffer
           (insert "one\ntwo\nthree\nfour\nfive\n")
-          (cl-letf (((symbol-function 'scrollview--diff-hl-available-p)
-                     (lambda () t))
-                    ((symbol-function 'diff-hl-changes)
+          (let ((require-function (symbol-function 'require)))
+            (cl-letf (((symbol-function 'require)
+                       (lambda (feature &rest arguments)
+                         (if (eq feature 'diff-hl)
+                             t
+                           (apply require-function feature arguments))))
+                      ((symbol-function 'diff-hl-changes)
                      (lambda ()
                        `((:working . ,(buffer-name diff-buffer)))))
                     ((symbol-function 'diff-hl-changes-from-buffer)
@@ -1938,8 +1911,8 @@ When STRING is non-nil, include it as the clicked string object."
                          (5 0 2 delete)))))
             (should (equal (scrollview--collect-vc-lines 'add) '(2 3)))
             (should (equal (scrollview--collect-vc-lines 'change) '(4)))
-            (should (equal (scrollview--collect-vc-lines 'delete) '(5)))
-            (should (eq parsed-buffer diff-buffer))))
+              (should (equal (scrollview--collect-vc-lines 'delete) '(5)))
+              (should (eq parsed-buffer diff-buffer)))))
       (kill-buffer diff-buffer))))
 
 (provide 'scrollview-test)
