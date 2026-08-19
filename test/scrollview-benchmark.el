@@ -154,31 +154,13 @@
      :collector (lambda (_window) lines))
     (length lines)))
 
-(defun scrollview-benchmark--require-hl-todo ()
-  "Load `hl-todo' or signal a benchmark error."
-  (dolist (dir '("~/.emacs.d/straight/repos/hl-todo"
-                 "~/.emacs.d/straight/repos/cond-let"
-                 "~/.emacs.d/straight/build/hl-todo"
-                 "~/.emacs.d/straight/build/cond-let"))
-    (let ((path (expand-file-name dir)))
-      (when (file-directory-p path)
-        (add-to-list 'load-path path))))
-  (unless (require 'hl-todo nil t)
-    (error "full_refresh_stress_signs requires hl-todo on load-path")))
-
 (defun scrollview-benchmark--register-stress-signs (line-count)
-  "Register stress sign collectors for LINE-COUNT using hl-todo results."
-  (scrollview-benchmark--require-hl-todo)
+  "Register synthetic stress sign collectors for LINE-COUNT."
   (let ((dense-lines (scrollview-benchmark--sign-lines line-count))
-        (groups '((todo stress-a 90 scrollview-search-bitmap scrollview-search-face)
-                  (fixme stress-b 80 scrollview-diagnostic-bitmap scrollview-diagnostic-warning-face)
-                  (hack stress-c 70 scrollview-sign-dot-bitmap scrollview-keyword-hack-face)
-                  (note stress-d 60 scrollview-sign-bar-bitmap scrollview-vc-change-face))))
-    (setq-local hl-todo-keyword-faces
-                '(("TODO" . "red")
-                  ("FIXME" . "orange")
-                  ("HACK" . "goldenrod")
-                  ("NOTE" . "steel blue")))
+        (groups '((stress-a 90 scrollview-search-bitmap scrollview-search-face)
+                  (stress-b 80 scrollview-diagnostic-bitmap scrollview-diagnostic-warning-face)
+                  (stress-c 70 scrollview-sign-dot-bitmap scrollview-conflict-middle-face)
+                  (stress-d 60 scrollview-sign-bar-bitmap scrollview-vc-change-face))))
     (scrollview-register-sign-group 'benchmark-stress t)
     (scrollview-register-sign-spec
      :group 'benchmark-stress
@@ -188,16 +170,14 @@
      :face 'scrollview-search-face
      :collector (lambda (_window) dense-lines))
     (dolist (entry groups)
-      (pcase-let ((`(,keyword-variant ,variant ,priority ,bitmap ,face) entry))
+      (pcase-let ((`(,variant ,priority ,bitmap ,face) entry))
         (scrollview-register-sign-spec
          :group 'benchmark-stress
          :variant variant
          :priority priority
          :bitmap bitmap
          :face face
-         :collector (apply-partially
-                     #'scrollview--collect-keyword-lines
-                     keyword-variant))))
+         :collector (lambda (_window) dense-lines))))
     (+ (length dense-lines)
        (* line-count (length groups)))))
 

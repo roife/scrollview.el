@@ -9,7 +9,6 @@
 (defvar eglot--highlights nil)
 (defvar flycheck-current-errors nil)
 (defvar highlight-symbol-keyword-alist nil)
-(defvar hl-todo-keyword-faces nil)
 
 (defun scrollview-test--reset-state ()
   "Reset scrollview global state used by tests."
@@ -480,7 +479,7 @@ When STRING is non-nil, include it as the clicked string object."
     (should (scrollview-sign-group-active-p 'diagnostics))
     (dolist (group '(highlight-symbol highlight-changes symbol-overlay
                                       bookmarks eglot compilation conflicts
-                                      keywords spell vc))
+                                      spell vc))
       (should-not (scrollview-sign-group-active-p group)))))
 
 (ert-deftest scrollview-startup-all-symbol-enables-all-groups ()
@@ -489,7 +488,7 @@ When STRING is non-nil, include it as the clicked string object."
     (scrollview--initialize-builtins)
     (dolist (group '(search highlight-symbol highlight-changes symbol-overlay
                             bookmarks eglot diagnostics compilation conflicts
-                            keywords spell vc))
+                            spell vc))
       (should (scrollview-sign-group-active-p group)))))
 
 (ert-deftest scrollview-builtins-register-new-sign-groups ()
@@ -498,7 +497,7 @@ When STRING is non-nil, include it as the clicked string object."
     (scrollview--initialize-builtins)
     (dolist (group '(highlight-symbol highlight-changes symbol-overlay
                                       bookmarks eglot compilation conflicts
-                                      keywords spell vc))
+                                      spell vc))
       (should (memq group (scrollview--sign-group-list))))
     (should-not (memq 'marks (scrollview--sign-group-list)))))
 
@@ -521,12 +520,8 @@ When STRING is non-nil, include it as the clicked string object."
 (ert-deftest scrollview-shared-symbols-use-distinct-group-faces ()
   (scrollview-test--reset-state)
   (let ((scrollview-signs-on-startup 'all)
-        (hl-todo-keyword-faces '(("TODO" . "red")
-                                 ("CUSTOM" . "cyan")))
         entries)
-    (cl-letf (((symbol-function 'scrollview--hl-todo-available-p)
-               (lambda () t)))
-      (scrollview--initialize-builtins))
+    (scrollview--initialize-builtins)
     (maphash
      (lambda (_id spec)
        (let* ((group (scrollview--sign-spec-group spec))
@@ -579,16 +574,7 @@ When STRING is non-nil, include it as the clicked string object."
 	                      scrollview-bookmark-bitmap
 	                      scrollview-sign-bar-bitmap
 	                      scrollview-sign-delete-bitmap
-	                      scrollview-spell-bitmap
-                      scrollview-keyword-todo-bitmap
-                      scrollview-keyword-fixme-bitmap
-                      scrollview-keyword-hack-bitmap
-                      scrollview-keyword-note-bitmap
-                      scrollview-keyword-workaround-bitmap
-                      scrollview-keyword-trick-r-bitmap
-                      scrollview-keyword-defect-bitmap
-                      scrollview-keyword-issue-bitmap
-                      scrollview-keyword-bitmap))))
+	                      scrollview-spell-bitmap))))
     (should (string= (scrollview--margin-glyph
                       (list :type 'sign
                             :group 'highlight-changes
@@ -634,79 +620,6 @@ When STRING is non-nil, include it as the clicked string object."
     (dolist (spec specs)
       (should (eq (scrollview--sign-spec-bitmap spec)
                   'scrollview-diagnostic-bitmap)))))
-
-(ert-deftest scrollview-keyword-bitmap-uses-readable-letters ()
-  (scrollview-test--reset-state)
-  (let ((scrollview-signs-on-startup '(keywords))
-        (hl-todo-keyword-faces '(("HACK" . "goldenrod")
-                                 ("FIXME" . "red")
-                                 ("NOTE" . "blue")
-                                 ("TODO" . "orange")
-                                 ("WORKAROUND" . "goldenrod")
-                                 ("TRICK(R)" . "goldenrod")
-                                 ("DEFECT" . "red")
-                                 ("ISSUE" . "red")
-                                 ("CUSTOM" . "cyan")))
-        variants)
-    (cl-letf (((symbol-function 'scrollview--hl-todo-available-p)
-               (lambda () t)))
-      (scrollview--initialize-builtins)
-      (maphash (lambda (_id candidate)
-                 (when (and (eq (scrollview--sign-spec-group candidate)
-                                'keywords))
-                   (push (cons (scrollview--sign-spec-variant candidate)
-                               (scrollview--sign-spec-bitmap candidate))
-                         variants)))
-               scrollview--sign-specs)
-      (should (eq (alist-get 'hack variants)
-                  'scrollview-keyword-hack-bitmap))
-      (should (eq (alist-get 'fixme variants)
-                  'scrollview-keyword-fixme-bitmap))
-      (should (eq (alist-get 'note variants)
-                  'scrollview-keyword-note-bitmap))
-      (should (eq (alist-get 'todo variants)
-                  'scrollview-keyword-todo-bitmap))
-      (should (eq (alist-get 'workaround variants)
-                  'scrollview-keyword-workaround-bitmap))
-      (should (eq (alist-get 'trick-r variants)
-                  'scrollview-keyword-trick-r-bitmap))
-      (should (eq (alist-get 'defect variants)
-                  'scrollview-keyword-defect-bitmap))
-      (should (eq (alist-get 'issue variants)
-                  'scrollview-keyword-issue-bitmap))
-      (should (eq (alist-get 'custom variants)
-                  'scrollview-keyword-bitmap)))))
-
-(ert-deftest scrollview-keyword-styles-map-named-variants ()
-  (dolist (entry '((todo scrollview-keyword-todo-face 30)
-                   (fixme scrollview-keyword-fixme-face 20)
-                   (hack scrollview-keyword-hack-face 20)
-                   (note scrollview-keyword-note-face 15)
-                   (workaround scrollview-keyword-workaround-face 20)
-                   (trick-r scrollview-keyword-trick-r-face 20)
-                   (defect scrollview-keyword-defect-face 20)
-                   (issue scrollview-keyword-issue-face 25)
-                   (custom scrollview-keyword-face 10)))
-    (pcase-let ((`(,variant ,face ,priority) entry))
-      (should (eq (scrollview--keyword-attr variant :face) face))
-      (should (= (scrollview--keyword-attr variant :priority) priority)))))
-
-(ert-deftest scrollview-keyword-scan-propertizes-before-hl-todo-search ()
-  (scrollview-test--reset-state)
-  (with-temp-buffer
-    (insert "// TODO:\n")
-    (let ((hl-todo-keyword-faces '(("TODO" . "red")))
-          (prepared nil))
-      (cl-letf (((symbol-function 'scrollview--hl-todo-available-p)
-                 (lambda () t))
-                ((symbol-function 'syntax-propertize)
-                 (lambda (end) (setq prepared end)))
-                ((symbol-function 'hl-todo--search)
-                 (lambda (&optional _regexp bound _backward)
-                   (and prepared
-                        (re-search-forward "\\(\\(TODO\\):\\)" bound t)))))
-        (should (equal (scrollview--hl-todo-lines) '((todo 1))))
-        (should (= prepared (point-max)))))))
 
 (ert-deftest scrollview-spell-bitmap-is-tilde ()
   (scrollview-test--reset-state)
@@ -928,7 +841,7 @@ When STRING is non-nil, include it as the clicked string object."
                (low (scrollview--make-sign-spec
                      :id 2 :group 'test :variant nil :priority -1
                      :bitmap 'scrollview-sign-dot-bitmap
-                     :face 'scrollview-keyword-face
+                     :face 'scrollview-search-face
                      :collector #'ignore))
                (info '(:window-lines 5 :buffer-lines 5
                        :thumb-top 0 :thumb-size 5))
@@ -1045,33 +958,21 @@ When STRING is non-nil, include it as the clicked string object."
   (let* ((scrollview-area 'margin)
          (scrollview-side 'left)
          (slot '(:type sign
-                 :group keywords
-                 :variant fixme
-                 :bitmap scrollview-keyword-fixme-bitmap
-                 :face scrollview-keyword-fixme-face))
+                 :group custom
+                 :variant marker
+                 :bitmap scrollview-sign-dot-bitmap
+                 :face scrollview-search-face))
          (string (scrollview--overlay-after-string slot 12))
          (display (get-text-property 0 'display string))
          (glyph (cadr display)))
     (should (equal (car display) '(margin left-margin)))
-    (should (string= glyph "F"))
+    (should (string= glyph "*"))
     (should (eq (get-text-property 0 'face glyph)
-                'scrollview-keyword-fixme-face))
+                'scrollview-search-face))
     (should (= (get-text-property 0 'scrollview-target-line string) 12))
     (should (= (get-text-property 0 'scrollview-target-line glyph) 12))
     (should (eq (get-text-property 0 'scrollview-target-type glyph)
                 'sign))))
-
-(ert-deftest scrollview-margin-keyword-glyphs-use-readable-letters ()
-  (dolist (entry '((workaround . "W")
-                   (trick-r . "R")
-                   (defect . "D")
-                   (issue . "I")))
-    (let ((slot (list :type 'sign
-                      :group 'keywords
-                      :variant (car entry)
-                      :bitmap 'scrollview-keyword-bitmap)))
-      (should (string= (scrollview--margin-glyph slot)
-                       (cdr entry))))))
 
 (ert-deftest scrollview-refresh-renders-margin-overlays ()
   (scrollview-test--reset-state)
@@ -1784,21 +1685,6 @@ When STRING is non-nil, include it as the clicked string object."
     (should (equal (scrollview--collect-conflict-lines 'top) '(2)))
     (should (equal (scrollview--collect-conflict-lines 'middle) '(4)))
     (should (equal (scrollview--collect-conflict-lines 'bottom) '(6)))))
-
-(ert-deftest scrollview-keyword-collector ()
-  (scrollview-test--reset-state)
-  (with-temp-buffer
-    (insert "TODO one\nplain\nFIXME two\n")
-    (let ((hl-todo-keyword-faces '(("TODO" . "red")
-                                   ("FIXME" . "orange"))))
-      (cl-letf (((symbol-function 'scrollview--hl-todo-available-p)
-                 (lambda () t))
-                ((symbol-function 'hl-todo--search)
-                 (lambda (&optional _regexp bound _backward)
-                   (re-search-forward "\\(\\(TODO\\|FIXME\\)\\)"
-                                      bound t))))
-        (should (equal (scrollview--collect-keyword-lines 'todo) '(1)))
-        (should (equal (scrollview--collect-keyword-lines 'fixme) '(3)))))))
 
 (ert-deftest scrollview-spell-collector-uses-flyspell-overlays ()
   (scrollview-test--reset-state)

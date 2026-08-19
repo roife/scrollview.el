@@ -20,7 +20,6 @@
 (declare-function flymake-diagnostic-beg "flymake" (diag))
 (declare-function flymake-diagnostic-type "flymake" (diag))
 (declare-function smerge-match-conflict "smerge-mode" ())
-(declare-function hl-todo--search "hl-todo" (&optional regexp bound backward))
 (declare-function diff-hl-changes "diff-hl" ())
 (declare-function diff-hl-changes-from-buffer "diff-hl" (buf))
 (declare-function flyspell-overlay-p "flyspell" (overlay))
@@ -34,7 +33,6 @@
 (defvar highlight-changes-mode)
 (defvar highlight-changes-visible-mode)
 (defvar highlight-symbol-keyword-alist)
-(defvar hl-todo-keyword-faces)
 (defvar diff-hl-reference-revision)
 (defvar diff-hl-show-staged-changes)
 (defvar diff-hl-update-async)
@@ -612,82 +610,6 @@ literally with `search-forward'."
   "Collect conflict marker lines for VARIANT."
   (cdr (assq variant (scrollview--conflict-lines))))
 
-(defun scrollview--hl-todo-available-p ()
-  "Return non-nil when hl-todo can provide keyword matching."
-  (require 'hl-todo nil t))
-
-(defun scrollview--hl-todo-keyword-variant (keyword)
-  "Return a sign variant symbol for hl-todo KEYWORD."
-  (let ((name (downcase
-               (string-trim
-                (replace-regexp-in-string "[^[:alnum:]]+" "-" keyword)
-                "-" "-"))))
-    (if (string-empty-p name)
-        'keyword
-      (intern name))))
-
-(defun scrollview--hl-todo-variant-matchers ()
-  "Return precomputed regexp-to-variant matchers for hl-todo keywords."
-  (cl-loop for (keyword . _) in (and (boundp 'hl-todo-keyword-faces)
-                                     hl-todo-keyword-faces)
-           collect (cons (concat "\\`\\(?:" keyword "\\)\\'")
-                         (scrollview--hl-todo-keyword-variant keyword))))
-
-(defun scrollview--hl-todo-match-variant (match &optional matchers)
-  "Return the hl-todo variant whose configured keyword matches MATCH."
-  (cl-loop for (regexp . variant) in (or matchers
-                                         (scrollview--hl-todo-variant-matchers))
-           when (string-match-p regexp match)
-           return variant))
-
-(defun scrollview--hl-todo-lines ()
-  "Return hl-todo keyword lines grouped by variant."
-  (when (scrollview--hl-todo-available-p)
-    ;; Do this before taking the cache token: syntax-propertize can change the
-    ;; buffer tick even though it does not change user-visible text.
-    (syntax-propertize (point-max))
-    (scrollview--cached-collector-value
-     'keywords
-     (list :tick (buffer-chars-modified-tick)
-           :keyword-faces (and (boundp 'hl-todo-keyword-faces)
-                               hl-todo-keyword-faces))
-     (lambda ()
-       (let ((tracker (scrollview--make-line-tracker))
-             (matchers (scrollview--hl-todo-variant-matchers))
-             (variant-cache (make-hash-table :test #'equal))
-             lines)
-         (save-excursion
-           (save-match-data
-             (goto-char (point-min))
-             (while (hl-todo--search)
-               (when-let* ((keyword (match-string-no-properties 2))
-                           (cached (gethash keyword variant-cache :missing))
-                           (variant
-                            (if (eq cached :missing)
-                                (let ((value
-                                       (scrollview--hl-todo-match-variant
-                                        keyword matchers)))
-                                  (puthash keyword (or value :none)
-                                           variant-cache)
-                                  value)
-                              (unless (eq cached :none) cached))))
-                 (let ((line (scrollview--tracked-line-number
-                              (match-beginning 1) tracker))
-                       (cell (assq variant lines)))
-                   (if cell
-                       (setcdr cell (cons line (cdr cell)))
-                     (push (cons variant (list line)) lines)))))))
-         (mapcar (lambda (entry)
-                   (cons (car entry)
-                         ;; The scan is monotonic, so reversing and removing
-                         ;; adjacent duplicates is linear and needs no sort.
-                         (seq-uniq (nreverse (cdr entry)) #'=)))
-                 lines))))))
-
-(defun scrollview--collect-keyword-lines (variant &rest _)
-  "Collect keyword lines for VARIANT."
-  (cdr (assq variant (scrollview--hl-todo-lines))))
-
 (defun scrollview--flyspell-note-update (&rest _)
   "Invalidate spell signs after Flyspell overlays change."
   (cl-incf scrollview--spell-state-generation)
@@ -773,27 +695,6 @@ literally with `search-forward'."
 (defun scrollview--collect-vc-lines (variant &rest _)
   "Collect VC sign lines for VARIANT."
   (cdr (assq variant (scrollview--vc-lines))))
-
-(defun scrollview--keyword-sign-specs ()
-  "Return built-in keyword sign specs from hl-todo."
-  (when (scrollview--hl-todo-available-p)
-    (cl-loop with seen
-             for (keyword . _) in (and (boundp 'hl-todo-keyword-faces)
-                                       hl-todo-keyword-faces)
-             for variant = (scrollview--hl-todo-keyword-variant keyword)
-             unless (memq variant seen)
-             collect (progn
-                       (push variant seen)
-                       (list :variant variant
-                             :priority (scrollview--keyword-attr variant
-                                                                   :priority)
-                             :bitmap (scrollview--keyword-attr variant
-                                                               :bitmap)
-                             :face (scrollview--keyword-attr variant
-                                                             :face)
-                             :collector (apply-partially
-                                         #'scrollview--collect-keyword-lines
-                                         variant))))))
 
 (defun scrollview--initialize-builtins ()
   "Register built-in sign groups once."
@@ -950,11 +851,6 @@ literally with `search-forward'."
      :face 'scrollview-conflict-bottom-face
      :collector (apply-partially #'scrollview--collect-conflict-lines
                                  'bottom))
-
-    (scrollview-register-sign-group
-     'keywords (scrollview--startup-sign-enabled-p 'keywords))
-    (dolist (spec (scrollview--keyword-sign-specs))
-      (apply #'scrollview-register-sign-spec :group 'keywords spec))
 
     (scrollview-register-sign-group
      'spell (scrollview--startup-sign-enabled-p 'spell))

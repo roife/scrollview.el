@@ -105,51 +105,6 @@ scrollview is loaded and after themes are enabled."
   "Face for conflict end signs."
   :group 'scrollview)
 
-(defface scrollview-keyword-todo-face
-  '((t (:inherit font-lock-warning-face)))
-  "Face for TODO keyword signs."
-  :group 'scrollview)
-
-(defface scrollview-keyword-fixme-face
-  '((t (:inherit error)))
-  "Face for FIXME keyword signs."
-  :group 'scrollview)
-
-(defface scrollview-keyword-hack-face
-  '((t (:inherit warning)))
-  "Face for HACK keyword signs."
-  :group 'scrollview)
-
-(defface scrollview-keyword-note-face
-  '((t (:inherit font-lock-doc-face)))
-  "Face for NOTE keyword signs."
-  :group 'scrollview)
-
-(defface scrollview-keyword-workaround-face
-  '((t (:inherit warning)))
-  "Face for WORKAROUND keyword signs."
-  :group 'scrollview)
-
-(defface scrollview-keyword-trick-r-face
-  '((t (:inherit warning)))
-  "Face for TRICK(R) keyword signs."
-  :group 'scrollview)
-
-(defface scrollview-keyword-defect-face
-  '((t (:inherit error)))
-  "Face for DEFECT keyword signs."
-  :group 'scrollview)
-
-(defface scrollview-keyword-issue-face
-  '((t (:inherit error)))
-  "Face for ISSUE keyword signs."
-  :group 'scrollview)
-
-(defface scrollview-keyword-face
-  '((t (:inherit font-lock-keyword-face)))
-  "Fallback face for keyword signs."
-  :group 'scrollview)
-
 (defface scrollview-spell-face
   '((t (:inherit flyspell-incorrect)))
   "Face for spelling signs."
@@ -213,63 +168,6 @@ The foreground is synchronized from `diff-removed'."
 
 (define-fringe-bitmap 'scrollview-spell-bitmap
   scrollview--spell-bitmap-vector nil nil 'center)
-
-(define-fringe-bitmap 'scrollview-keyword-todo-bitmap
-  [0 126 126 24 24 24 24 0] nil nil 'center)
-
-(define-fringe-bitmap 'scrollview-keyword-fixme-bitmap
-  [0 126 126 96 124 124 96 0] nil nil 'center)
-
-(define-fringe-bitmap 'scrollview-keyword-hack-bitmap
-  [0 102 102 126 126 102 102 0] nil nil 'center)
-
-(define-fringe-bitmap 'scrollview-keyword-note-bitmap
-  [0 102 118 126 126 110 102 0] nil nil 'center)
-
-(define-fringe-bitmap 'scrollview-keyword-workaround-bitmap
-  [0 102 102 126 126 126 60 0] nil nil 'center)
-
-(define-fringe-bitmap 'scrollview-keyword-trick-r-bitmap
-  [0 124 102 124 120 108 102 0] nil nil 'center)
-
-(define-fringe-bitmap 'scrollview-keyword-defect-bitmap
-  [0 120 108 102 102 108 120 0] nil nil 'center)
-
-(define-fringe-bitmap 'scrollview-keyword-issue-bitmap
-  [0 126 24 24 24 24 126 0] nil nil 'center)
-
-(define-fringe-bitmap 'scrollview-keyword-bitmap
-  [0 24 60 126 60 24 0 0] nil nil 'center)
-
-(defconst scrollview--keyword-metadata
-  '((todo       :priority 30 :bitmap scrollview-keyword-todo-bitmap
-                :face scrollview-keyword-todo-face)
-    (fixme      :priority 20 :bitmap scrollview-keyword-fixme-bitmap
-                :face scrollview-keyword-fixme-face)
-    (hack       :priority 20 :bitmap scrollview-keyword-hack-bitmap
-                :face scrollview-keyword-hack-face)
-    (note       :priority 15 :bitmap scrollview-keyword-note-bitmap
-                :face scrollview-keyword-note-face)
-    (workaround :priority 20 :bitmap scrollview-keyword-workaround-bitmap
-                :face scrollview-keyword-workaround-face)
-    (trick-r    :priority 20 :bitmap scrollview-keyword-trick-r-bitmap
-                :face scrollview-keyword-trick-r-face)
-    (defect     :priority 20 :bitmap scrollview-keyword-defect-bitmap
-                :face scrollview-keyword-defect-face)
-    (issue      :priority 25 :bitmap scrollview-keyword-issue-bitmap
-                :face scrollview-keyword-issue-face))
-  "Metadata for built-in keyword sign variants.
-Each entry is (VARIANT :priority N :bitmap SYMBOL :face FACE).  Variants
-not listed here use `scrollview-keyword-bitmap', `scrollview-keyword-face',
-and priority 10.")
-
-(defun scrollview--keyword-attr (variant attr)
-  "Return ATTR for keyword VARIANT, falling back to a default."
-  (or (plist-get (cdr (assq variant scrollview--keyword-metadata)) attr)
-      (pcase attr
-        (:priority 10)
-        (:bitmap 'scrollview-keyword-bitmap)
-        (:face 'scrollview-keyword-face))))
 
 (defvar scrollview--sign-render-face-cache (make-hash-table :test #'equal)
   "Hash table mapping source sign faces to cached render face data.")
