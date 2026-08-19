@@ -191,15 +191,11 @@ between START values instead of rescanning from `point-min'.")
             (cons (buffer-chars-modified-tick) (max 1 count)))))
   (setq scrollview--line-change-state nil))
 
-(defun scrollview--collector-cache ()
-  "Return the current buffer's collector cache."
-  (unless (hash-table-p scrollview--collector-cache)
-    (setq scrollview--collector-cache (make-hash-table :test #'equal)))
-  scrollview--collector-cache)
-
 (defun scrollview--cached-collector-value (key token collector)
   "Return cached KEY value for TOKEN, or compute it with COLLECTOR."
-  (let* ((cache (scrollview--collector-cache))
+  (let* ((cache (or scrollview--collector-cache
+                    (setq scrollview--collector-cache
+                          (make-hash-table :test #'equal))))
          (entry (gethash key cache)))
     (if (and entry (equal token (plist-get entry :token)))
         (plist-get entry :value)
@@ -286,13 +282,6 @@ positions, which during scrolling is typically a handful of newlines."
             (setq scrollview--top-line-cache (cons tick (cons start line)))
             line)))))))
 
-(defun scrollview--window-track-lines (window top-line buffer-lines)
-  "Return drawable display rows for WINDOW from TOP-LINE to BUFFER-LINES.
-Rows below `point-max' are empty display area and cannot reliably host
-overlays."
-  (min (scrollview--window-line-height window)
-       (max 1 (1+ (- buffer-lines top-line)))))
-
 (defun scrollview--restricted-p (&optional buffer)
   "Return non-nil when BUFFER should use restricted mode."
   (with-current-buffer (or buffer (current-buffer))
@@ -321,20 +310,6 @@ overlays."
       t
     (scrollview--fringe-available-p window)))
 
-(defun scrollview--ensure-window-margins (window)
-  "Ensure WINDOW has enough margin space for scrollview."
-  (when (window-live-p window)
-    (with-current-buffer (window-buffer window)
-      (when (scrollview--margin-area-p)
-        (pcase-let* ((`(,left . ,right) (window-margins window))
-                     (target (if (eq scrollview-side 'left) left right)))
-          (when (zerop (or target 0))
-            (unless (gethash window scrollview--window-margins)
-              (puthash window (cons left right) scrollview--window-margins))
-            (if (eq scrollview-side 'left)
-                (set-window-margins window 1 right)
-              (set-window-margins window left 1))))))))
-
 (defun scrollview--restore-window-margins (window)
   "Restore WINDOW margins saved by scrollview."
   (when-let* ((margins (gethash window scrollview--window-margins)))
@@ -347,7 +322,14 @@ overlays."
   (if (and (window-live-p window)
            (with-current-buffer (window-buffer window)
              (scrollview--margin-area-p)))
-      (scrollview--ensure-window-margins window)
+      (pcase-let* ((`(,left . ,right) (window-margins window))
+                   (target (if (eq scrollview-side 'left) left right)))
+        (when (zerop (or target 0))
+          (unless (gethash window scrollview--window-margins)
+            (puthash window (cons left right) scrollview--window-margins))
+          (if (eq scrollview-side 'left)
+              (set-window-margins window 1 right)
+            (set-window-margins window left 1))))
     (scrollview--restore-window-margins window)))
 
 (defun scrollview--excluded-mode-p ()
@@ -556,8 +538,8 @@ BOTTOM-VISIBLE should be non-nil when point-max is visible."
     (let* ((window-lines (scrollview--window-line-height window))
            (buffer-lines (scrollview--line-count))
            (top-line (scrollview--window-top-line window))
-           (track-lines (scrollview--window-track-lines
-                         window top-line buffer-lines))
+           (track-lines
+            (min window-lines (max 1 (1+ (- buffer-lines top-line)))))
            (bottom-line (+ top-line window-lines -1))
            (bottom-visible (>= bottom-line buffer-lines))
            (overflow (or (> top-line 1)
@@ -1201,50 +1183,6 @@ relevant has changed since the last refresh."
 
 ;;; Mouse navigation
 
-(defun scrollview--click-area ()
-  "Return the mouse area symbol for the configured display area."
-  (scrollview--overlay-display-side))
-
-(defun scrollview--event-row (position)
-  "Return zero-based window row for mouse POSITION."
-  (when-let* ((row (cdr-safe (posn-col-row position))))
-    (and (numberp row) (max 0 (truncate row)))))
-
-(defun scrollview--clickable-info (window)
-  "Return position info when WINDOW currently displays scrollview."
-  (when (scrollview--window-eligible-p window)
-    (let* ((info (scrollview--position-info window))
-           (sign-items (scrollview--collect-sign-items-cached window)))
-      (when (scrollview--should-render-p info sign-items)
-        info))))
-
-(defun scrollview--event-target-line (window position)
-  "Return document line corresponding to mouse POSITION in WINDOW."
-  (when-let* ((info (scrollview--clickable-info window))
-              (row (scrollview--event-row position))
-              (track-lines (or (plist-get info :track-lines)
-                               (plist-get info :window-lines)))
-              (buffer-lines (plist-get info :buffer-lines)))
-    (scrollview--row-to-line row track-lines buffer-lines)))
-
-(defun scrollview--event-overlay (window position)
-  "Return WINDOW's active scrollview overlay at mouse POSITION."
-  (when-let* ((row (scrollview--event-row position)))
-    (cl-find-if (lambda (overlay)
-                  (eql row (overlay-get overlay 'scrollview-row)))
-                (gethash window scrollview--window-overlays))))
-
-(defun scrollview--goto-line (window line &optional set-start)
-  "Select WINDOW and move point to one-based LINE.
-When SET-START is non-nil, also make LINE the window start."
-  (select-window window)
-  (with-current-buffer (window-buffer window)
-    (let ((line (min (scrollview--line-count) (max 1 line))))
-      (goto-char (point-min))
-      (forward-line (1- line))
-      (when set-start
-        (set-window-start window (point) t)))))
-
 ;;;###autoload
 (defun scrollview-click (event)
   "Jump to the scrollview position clicked by mouse EVENT."
@@ -1254,17 +1192,41 @@ When SET-START is non-nil, also make LINE the window start."
          (area (posn-area position)))
     (if (and (window-live-p window)
              (eq area (with-current-buffer (window-buffer window)
-                        (scrollview--click-area))))
+                        (scrollview--overlay-display-side))))
         (with-current-buffer (window-buffer window)
-          (let* ((overlay (scrollview--event-overlay window position))
+          (let* ((row (when-let* ((row (cdr-safe (posn-col-row position))))
+                        (and (numberp row) (max 0 (truncate row)))))
+                 (overlay
+                  (and row
+                       (cl-find-if
+                        (lambda (overlay)
+                          (eql row (overlay-get overlay 'scrollview-row)))
+                        (gethash window scrollview--window-overlays))))
                  (type (and overlay
                             (overlay-get overlay 'scrollview-target-type)))
                  (line (or (and (eq type 'sign)
                                 (overlay-get overlay
                                              'scrollview-target-line))
-                           (scrollview--event-target-line window position))))
+                           (when (and row
+                                      (scrollview--window-eligible-p window))
+                             (let* ((info (scrollview--position-info window))
+                                    (sign-items
+                                     (scrollview--collect-sign-items-cached
+                                      window)))
+                               (when (scrollview--should-render-p info sign-items)
+                                 (scrollview--row-to-line
+                                  row
+                                  (or (plist-get info :track-lines)
+                                      (plist-get info :window-lines))
+                                  (plist-get info :buffer-lines))))))))
             (if line
-                (scrollview--goto-line window line (not (eq type 'sign)))
+                (progn
+                  (select-window window)
+                  (setq line (min (scrollview--line-count) (max 1 line)))
+                  (goto-char (point-min))
+                  (forward-line (1- line))
+                  (unless (eq type 'sign)
+                    (set-window-start window (point) t)))
               (mouse-set-point event))))
       (mouse-set-point event))))
 
