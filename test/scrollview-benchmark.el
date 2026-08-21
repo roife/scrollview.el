@@ -88,7 +88,6 @@
   (setq scrollview--bookmark-state-generation 0)
   (setq scrollview--eglot-highlight-state-generation 0)
   (setq scrollview--eglot-highlight-token nil)
-  (setq scrollview--highlight-symbol-state-generation 0)
   (setq scrollview--symbol-overlay-state-generation 0)
   (setq scrollview--diagnostic-state-generation 0)
   (setq scrollview--spell-state-generation 0)

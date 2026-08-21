@@ -29,7 +29,6 @@
 (defvar eglot--highlights)
 (defvar highlight-changes-mode)
 (defvar highlight-changes-visible-mode)
-(defvar highlight-symbol-keyword-alist)
 (defvar diff-hl-reference-revision)
 (defvar diff-hl-show-staged-changes)
 (defvar diff-hl-update-async)
@@ -42,9 +41,6 @@
 
 (defvar-local scrollview--eglot-highlight-token nil
   "Buffer-local token for the last observed Eglot highlight overlays.")
-
-(defvar-local scrollview--highlight-symbol-state-generation 0
-  "Buffer-local generation incremented after highlight-symbol updates.")
 
 (defvar-local scrollview--highlight-changes-state-generation 0
   "Buffer-local generation incremented after Highlight Changes updates.")
@@ -203,40 +199,6 @@ literally with `search-forward'."
 (defun scrollview--collect-diagnostic-lines (level &rest _)
   "Collect Flymake diagnostic lines for LEVEL."
   (cdr (assq level (scrollview--diagnostic-lines))))
-
-(defun scrollview--regexp-lines (pattern)
-  "Return buffer lines matching regexp PATTERN."
-  (when (and (stringp pattern)
-             (not (string-empty-p pattern)))
-    (scrollview--scan-search-lines pattern t)))
-
-(defun scrollview--highlight-symbol-patterns ()
-  "Return active highlight-symbol regexps for the current buffer."
-  (let (patterns)
-    (when (boundp 'highlight-symbol-keyword-alist)
-      (dolist (entry highlight-symbol-keyword-alist)
-        (when-let* ((pattern (car-safe entry)))
-          (when (and (stringp pattern)
-                     (not (string-empty-p pattern)))
-            (cl-pushnew pattern patterns :test #'equal)))))
-    (nreverse patterns)))
-
-(defun scrollview--highlight-symbol-lines ()
-  "Return lines highlighted by highlight-symbol."
-  (let ((patterns (scrollview--highlight-symbol-patterns)))
-    (scrollview--cached-collector-value
-     'highlight-symbol
-     (list :tick (buffer-chars-modified-tick)
-           :generation scrollview--highlight-symbol-state-generation
-           :patterns patterns)
-     (lambda ()
-       (scrollview--dedupe-sorted-lines
-        (cl-loop for pattern in patterns
-                 append (scrollview--regexp-lines pattern)))))))
-
-(defun scrollview--collect-highlight-symbol-lines (_window)
-  "Collect lines highlighted by highlight-symbol."
-  (scrollview--highlight-symbol-lines))
 
 (defun scrollview--highlight-changes-active-p ()
   "Return non-nil when Highlight Changes signs should be visible."
@@ -606,17 +568,6 @@ snapshot, so an unchanged command allocates no per-overlay cons cells."
      :collector #'scrollview--collect-search-lines)
 
     (scrollview-register-sign-group
-     'highlight-symbol (scrollview--startup-sign-enabled-p
-                        'highlight-symbol))
-    (scrollview-register-sign-spec
-     :group 'highlight-symbol
-     :variant 'match
-     :priority 70
-     :bitmap 'scrollview-search-bitmap
-     :face 'scrollview-highlight-symbol-face
-     :collector #'scrollview--collect-highlight-symbol-lines)
-
-    (scrollview-register-sign-group
      'highlight-changes (scrollview--startup-sign-enabled-p
                          'highlight-changes))
     (scrollview-register-sign-spec
@@ -777,27 +728,6 @@ snapshot, so an unchanged command allocates no per-overlay cons cells."
         (cl-incf scrollview--eglot-highlight-state-generation)
         (scrollview--invalidate-buffer-sign-cache)
         (scrollview--schedule-buffer-refresh)))))
-
-
-(defun scrollview--after-highlight-symbol-update (&rest _)
-  "Refresh scrollview signs after highlight-symbol updates."
-  (when (bound-and-true-p scrollview-mode)
-    (cl-incf scrollview--highlight-symbol-state-generation)
-    (scrollview--invalidate-buffer-sign-cache)
-    (scrollview--schedule-buffer-refresh)))
-
-(with-eval-after-load 'highlight-symbol
-  (dolist (function '(highlight-symbol
-                      highlight-symbol-add-symbol
-                      highlight-symbol-remove-symbol
-                      highlight-symbol-remove-all
-                      highlight-symbol-temp-highlight
-                      highlight-symbol-mode-remove-temp))
-    (when (and (fboundp function)
-               (not (advice-member-p
-                     #'scrollview--after-highlight-symbol-update function)))
-      (advice-add function :after
-                  #'scrollview--after-highlight-symbol-update))))
 
 
 (defun scrollview--after-highlight-changes-update (&rest _)

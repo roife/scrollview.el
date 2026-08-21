@@ -78,7 +78,6 @@ Restricted mode keeps the scrollbar and skips sign collection.
 | Group | Default priority | Default face | Fringe symbol | Margin glyph |
 | --- | --- | --- | --- | --- |
 | `search` | `100` | `scrollview-search-face` | `=` | `=` |
-| `highlight-symbol` | `70` | `scrollview-highlight-symbol-face` | `=` | `=` |
 | `highlight-changes` | `80` | `change` `scrollview-highlight-changes-face`, `delete` `scrollview-highlight-changes-delete-face` | `change` `C`, `delete` `X` | `change` `C`, `delete` `X` |
 | `symbol-overlay` | `90` | `scrollview-symbol-overlay-face` | `=` | `=` |
 | `bookmarks` | `30` | `scrollview-bookmark-face` | `%` | `%` |

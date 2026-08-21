@@ -30,11 +30,6 @@ scrollview is loaded and after themes are enabled."
   "Face for search signs."
   :group 'scrollview)
 
-(defface scrollview-highlight-symbol-face
-  '((t (:inherit (highlight-symbol-face highlight))))
-  "Face for highlight-symbol signs."
-  :group 'scrollview)
-
 (defface scrollview-symbol-overlay-face
   '((t (:inherit (symbol-overlay-default-face highlight))))
   "Face for symbol-overlay signs."

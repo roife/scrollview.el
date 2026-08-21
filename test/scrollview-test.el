@@ -7,7 +7,6 @@
 (require 'scrollview)
 
 (defvar eglot--highlights nil)
-(defvar highlight-symbol-keyword-alist nil)
 
 (defun scrollview-test--reset-state ()
   "Reset scrollview global state used by tests."
@@ -64,7 +63,6 @@
   (setq scrollview--last-search-regexp nil)
   (setq scrollview--eglot-highlight-state-generation 0)
   (setq scrollview--eglot-highlight-token nil)
-  (setq scrollview--highlight-symbol-state-generation 0)
   (setq scrollview--highlight-changes-state-generation 0)
   (setq scrollview--symbol-overlay-state-generation 0)
   (setq scrollview--diagnostic-state-generation 0)
@@ -436,7 +434,7 @@ When STRING is non-nil, include it as the clicked string object."
   (let ((scrollview-signs-on-startup '(search diagnostics)))
     (scrollview--initialize-builtins)
     (should (scrollview-sign-group-active-p 'diagnostics))
-    (dolist (group '(highlight-symbol highlight-changes symbol-overlay
+    (dolist (group '(highlight-changes symbol-overlay
                                       bookmarks eglot conflicts
                                       spell vc))
       (should-not (scrollview-sign-group-active-p group)))))
@@ -445,12 +443,12 @@ When STRING is non-nil, include it as the clicked string object."
   (scrollview-test--reset-state)
   (let ((scrollview-signs-on-startup 'all))
     (scrollview--initialize-builtins)
-    (dolist (group '(search highlight-symbol highlight-changes symbol-overlay
+    (dolist (group '(search highlight-changes symbol-overlay
                             bookmarks eglot diagnostics conflicts
                             spell vc))
       (should (scrollview-sign-group-active-p group)))))
 
-(ert-deftest scrollview-symbol-highlights-use-search-bitmap ()
+(ert-deftest scrollview-overlay-highlights-use-search-bitmap ()
   (scrollview-test--reset-state)
   (let ((scrollview-signs-on-startup 'all)
         bitmaps)
@@ -458,11 +456,11 @@ When STRING is non-nil, include it as the clicked string object."
     (maphash
      (lambda (_id spec)
        (let ((group (scrollview--sign-spec-group spec)))
-         (when (memq group '(highlight-symbol symbol-overlay eglot))
+         (when (memq group '(symbol-overlay eglot))
            (push (cons group (scrollview--sign-spec-bitmap spec))
                  bitmaps))))
      scrollview--sign-specs)
-    (dolist (group '(highlight-symbol symbol-overlay eglot))
+    (dolist (group '(symbol-overlay eglot))
       (should (eq (alist-get group bitmaps)
                   'scrollview-search-bitmap)))))
 
@@ -1629,19 +1627,6 @@ When STRING is non-nil, include it as the clicked string object."
                  #'ignore))
         (scrollview--after-isearch-update)))
     (should-not scrollview--last-search-pattern)))
-
-(ert-deftest scrollview-highlight-symbol-collector ()
-  (scrollview-test--reset-state)
-  (with-temp-buffer
-    (insert "alpha\nbeta alpha\ngamma beta\n")
-    (let ((highlight-symbol-keyword-alist
-           '(("\\_<alpha\\_>" 0 highlight prepend)
-             ("\\_<beta\\_>" 0 highlight prepend))))
-      (should (equal (scrollview--collect-highlight-symbol-lines nil)
-                     '(1 2 3))))
-    (let ((highlight-symbol-keyword-alist nil))
-      (cl-incf scrollview--highlight-symbol-state-generation)
-      (should-not (scrollview--collect-highlight-symbol-lines nil)))))
 
 (ert-deftest scrollview-highlight-changes-collector-requires-visible-mode ()
   (scrollview-test--reset-state)
