@@ -60,21 +60,6 @@ scrollview is loaded and after themes are enabled."
   "Face for Highlight Changes deletion signs."
   :group 'scrollview)
 
-(defface scrollview-compilation-error-face
-  '((t (:inherit (compilation-error error))))
-  "Face for compilation error signs."
-  :group 'scrollview)
-
-(defface scrollview-compilation-warning-face
-  '((t (:inherit (compilation-warning warning))))
-  "Face for compilation warning signs."
-  :group 'scrollview)
-
-(defface scrollview-compilation-info-face
-  '((t (:inherit (compilation-info success))))
-  "Face for compilation info signs."
-  :group 'scrollview)
-
 (defface scrollview-diagnostic-error-face
   '((t (:inherit error)))
   "Face for diagnostic error signs."

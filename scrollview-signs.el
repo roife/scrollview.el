@@ -23,9 +23,6 @@
 (declare-function diff-hl-changes "diff-hl" ())
 (declare-function diff-hl-changes-from-buffer "diff-hl" (buf))
 (declare-function flyspell-overlay-p "flyspell" (overlay))
-(declare-function compilation--ensure-parse "compile" (limit))
-(declare-function compilation--message->loc "compile" (message))
-(declare-function compilation--message->type "compile" (message))
 (declare-function symbol-overlay-get-list "symbol-overlay" (&optional index symbol))
 
 (defvar bookmark-alist)
@@ -39,9 +36,6 @@
 
 (defvar scrollview--bookmark-state-generation 0
   "Generation incremented after bookmark updates.")
-
-(defvar scrollview--compilation-state-generation 0
-  "Generation incremented after compilation output updates.")
 
 (defvar-local scrollview--eglot-highlight-state-generation 0
   "Buffer-local generation incremented after Eglot highlight updates.")
@@ -220,124 +214,6 @@ literally with `search-forward'."
 (defun scrollview--collect-diagnostic-lines (level &rest _)
   "Collect diagnostic lines for LEVEL from Flymake and loaded Flycheck."
   (cdr (assq level (scrollview--diagnostic-lines))))
-
-(defun scrollview--compilation-buffers ()
-  "Return live compilation buffers, excluding grep buffers."
-  (when (require 'compile nil t)
-    (seq-filter
-     (lambda (buffer)
-       (with-current-buffer buffer
-         (and (derived-mode-p 'compilation-mode)
-              (not (derived-mode-p 'grep-mode)))))
-     (buffer-list))))
-
-(defun scrollview--compilation-buffer-token ()
-  "Return a token describing current compilation buffers."
-  (mapcar (lambda (buffer)
-            (with-current-buffer buffer
-              (list buffer (buffer-chars-modified-tick))))
-          (scrollview--compilation-buffers)))
-
-(defun scrollview--compilation-type-level (type)
-  "Return a sign level for compilation message TYPE."
-  (pcase type (2 'error) (1 'warning) (_ 'info)))
-
-(defun scrollview--compilation-message-list ()
-  "Return parsed compilation messages in the current compilation buffer."
-  (when (fboundp 'compilation--ensure-parse)
-    (compilation--ensure-parse (point-max)))
-  (let ((pos (point-min))
-        messages)
-    (while (< pos (point-max))
-      (let ((message (get-text-property pos 'compilation-message))
-            (next (next-single-property-change
-                   pos 'compilation-message nil (point-max))))
-        (when message
-          (cl-pushnew message messages :test #'eq))
-        (setq pos (or next (point-max)))))
-    (nreverse messages)))
-
-(defun scrollview--compilation-file-spec-name (file-spec)
-  "Return absolute file name described by compilation FILE-SPEC."
-  (when-let* ((file (car-safe file-spec)))
-    (when (stringp file)
-      (let ((directory (cond
-                        ((stringp (cdr-safe file-spec))
-                         (cdr-safe file-spec))
-                        ((consp (cdr-safe file-spec))
-                         (cadr file-spec)))))
-        (expand-file-name file directory)))))
-
-(defun scrollview--compilation-file-struct-matches-p
-    (file-struct source-buffer source-file)
-  "Return non-nil when FILE-STRUCT points at SOURCE-BUFFER or SOURCE-FILE."
-  (let* ((file-spec (car-safe file-struct))
-         (target (car-safe file-spec)))
-    (cond
-     ((bufferp target)
-      (eq target source-buffer))
-     ((and source-file (stringp target))
-      (scrollview--same-file-p
-       source-file
-       (scrollview--compilation-file-spec-name file-spec))))))
-
-(defun scrollview--compilation-loc-line (loc source-buffer source-file)
-  "Return source line for compilation LOC in SOURCE-BUFFER or SOURCE-FILE."
-  (let ((marker (nth 3 loc))
-        (line (cadr loc))
-        (file-struct (nth 2 loc)))
-    (cond
-     ((and (markerp marker)
-           (eq (marker-buffer marker) source-buffer)
-           (marker-position marker))
-      (with-current-buffer source-buffer
-        (line-number-at-pos marker t)))
-     ((and (integerp line)
-           (scrollview--compilation-file-struct-matches-p
-            file-struct source-buffer source-file))
-      line))))
-
-(defun scrollview--compilation-message-line
-    (message source-buffer source-file)
-  "Return source line for compilation MESSAGE in SOURCE-BUFFER or SOURCE-FILE."
-  (when-let* ((loc (compilation--message->loc message)))
-    (scrollview--compilation-loc-line loc source-buffer source-file)))
-
-(defun scrollview--compilation-lines ()
-  "Collect compilation result lines grouped by severity."
-  (let ((source-buffer (current-buffer))
-        (source-file (buffer-file-name))
-        (compilation-token (scrollview--compilation-buffer-token)))
-    (scrollview--cached-collector-value
-     'compilation
-     (list :tick (buffer-chars-modified-tick)
-           :generation scrollview--compilation-state-generation
-           :source-file source-file
-           :compilation compilation-token)
-     (lambda ()
-       (let ((result (list (cons 'error nil)
-                           (cons 'warning nil)
-                           (cons 'info nil))))
-         (dolist (buffer (scrollview--compilation-buffers))
-           (with-current-buffer buffer
-             (dolist (message (scrollview--compilation-message-list))
-               (when-let* ((line (scrollview--compilation-message-line
-                                   message source-buffer source-file)))
-                 (let* ((level (scrollview--compilation-type-level
-                                (compilation--message->type message)))
-                        (cell (assq level result)))
-                   (setcdr cell (cons line (cdr cell))))))))
-         (with-current-buffer source-buffer
-           (let ((buffer-lines (scrollview--line-count)))
-             (mapcar (lambda (cell)
-                       (cons (car cell)
-                             (scrollview--clamp-lines (cdr cell)
-                                                      buffer-lines)))
-                     result))))))))
-
-(defun scrollview--collect-compilation-lines (level &rest _)
-  "Collect compilation result lines for LEVEL."
-  (cdr (assq level (scrollview--compilation-lines))))
 
 (defun scrollview--regexp-lines (pattern)
   "Return buffer lines matching regexp PATTERN."
@@ -829,33 +705,6 @@ snapshot, so an unchanged command allocates no per-overlay cons cells."
                                  'info))
 
     (scrollview-register-sign-group
-     'compilation (scrollview--startup-sign-enabled-p 'compilation))
-    (scrollview-register-sign-spec
-     :group 'compilation
-     :variant 'error
-     :priority 60
-     :bitmap 'scrollview-diagnostic-bitmap
-     :face 'scrollview-compilation-error-face
-     :collector (apply-partially #'scrollview--collect-compilation-lines
-                                 'error))
-    (scrollview-register-sign-spec
-     :group 'compilation
-     :variant 'warning
-     :priority 58
-     :bitmap 'scrollview-diagnostic-bitmap
-     :face 'scrollview-compilation-warning-face
-     :collector (apply-partially #'scrollview--collect-compilation-lines
-                                 'warning))
-    (scrollview-register-sign-spec
-     :group 'compilation
-     :variant 'info
-     :priority 35
-     :bitmap 'scrollview-diagnostic-bitmap
-     :face 'scrollview-compilation-info-face
-     :collector (apply-partially #'scrollview--collect-compilation-lines
-                                 'info))
-
-    (scrollview-register-sign-group
      'conflicts (scrollview--startup-sign-enabled-p 'conflicts))
     (scrollview-register-sign-spec
      :group 'conflicts
@@ -1030,19 +879,6 @@ snapshot, so an unchanged command allocates no per-overlay cons cells."
                      #'scrollview--after-bookmark-update function)))
       (advice-add function :after
                   #'scrollview--after-bookmark-update))))
-
-
-(defun scrollview--after-compilation-update (&rest _)
-  "Refresh scrollview signs after compilation output updates."
-  (cl-incf scrollview--compilation-state-generation)
-  (when (scrollview-sign-group-active-p 'compilation)
-    (scrollview--invalidate-sign-cache)
-    (scrollview--schedule-refresh)))
-
-(with-eval-after-load 'compile
-  (add-hook 'compilation-filter-hook #'scrollview--after-compilation-update)
-  (add-hook 'compilation-finish-functions
-            #'scrollview--after-compilation-update))
 
 
 (defun scrollview--after-diagnostics-update (&rest _)

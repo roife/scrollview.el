@@ -84,7 +84,6 @@ Restricted mode keeps the scrollbar and skips sign collection.
 | `bookmarks` | `30` | `scrollview-bookmark-face` | `%` | `%` |
 | `eglot` | `90` | `scrollview-eglot-face` | `=` | `=` |
 | `diagnostics` | `error` `60`, `warning` `58`, `info` `35` | `error` `scrollview-diagnostic-error-face`, `warning` `scrollview-diagnostic-warning-face`, `info` `scrollview-diagnostic-info-face` | `o` | `!` |
-| `compilation` | `error` `60`, `warning` `58`, `info` `35` | `error` `scrollview-compilation-error-face`, `warning` `scrollview-compilation-warning-face`, `info` `scrollview-compilation-info-face` | `o` | `!` |
 | `conflicts` | `70` | `top` `scrollview-conflict-top-face`, `middle` `scrollview-conflict-middle-face`, `bottom` `scrollview-conflict-bottom-face` | `*` | `top` `<`, `middle` `=`, `bottom` `>` |
 | `spell` | `50` | `scrollview-spell-face` | `~` | `~` |
 | `vc` | `40` | `add` `scrollview-vc-add-face`, `change` `scrollview-vc-change-face`, `delete` `scrollview-vc-delete-face` | `add` and `change` <code>&#124;</code>, `delete` `=` | `add` `+`, `change` <code>&#124;</code>, `delete` `-` |

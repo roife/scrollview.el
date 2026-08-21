@@ -67,10 +67,6 @@
                #'scrollview--window-size-change)
   (remove-hook 'post-command-hook #'scrollview--post-command)
   (remove-hook 'post-command-hook #'scrollview--after-eglot-post-command)
-  (remove-hook 'compilation-filter-hook
-               #'scrollview--after-compilation-update)
-  (remove-hook 'compilation-finish-functions
-               #'scrollview--after-compilation-update)
   (advice-remove 'lazy-highlight-cleanup
                  #'scrollview--after-lazy-highlight-cleanup)
   (setq scrollview--global-hooks-installed nil)
@@ -90,7 +86,6 @@
   (setq scrollview--last-search-pattern nil)
   (setq scrollview--last-search-regexp nil)
   (setq scrollview--bookmark-state-generation 0)
-  (setq scrollview--compilation-state-generation 0)
   (setq scrollview--eglot-highlight-state-generation 0)
   (setq scrollview--eglot-highlight-token nil)
   (setq scrollview--highlight-symbol-state-generation 0)
