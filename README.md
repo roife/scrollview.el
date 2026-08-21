@@ -92,6 +92,8 @@ All built-in groups are enabled by default.  Groups backed by optional packages
 produce signs only when their package is available and has data for the current
 buffer.
 
+The `diagnostics` group reads diagnostics from Flymake.
+
 The `spell` group reads overlays from `scrollview-spell-checker`; set it to
 `flyspell` (the default) or `jinx` to match the spell checker you use.
 

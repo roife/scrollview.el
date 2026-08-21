@@ -178,13 +178,11 @@ literally with `search-forward'."
       (line-number-at-pos beg t))))
 
 (defun scrollview--diagnostic-lines ()
-  "Collect diagnostic lines from Flymake and Flycheck in one pass."
+  "Collect Flymake diagnostic lines grouped by severity."
   (scrollview--cached-collector-value
    'diagnostics
    (list :tick (buffer-chars-modified-tick)
-         :generation scrollview--diagnostic-state-generation
-         :flycheck (and (boundp 'flycheck-current-errors)
-                        (symbol-value 'flycheck-current-errors)))
+         :generation scrollview--diagnostic-state-generation)
    (lambda ()
      (let ((buffer-lines (scrollview--line-count))
            (result (list (cons 'error nil)
@@ -197,22 +195,13 @@ literally with `search-forward'."
                   (cell (assq level result)))
              (when-let* ((line (scrollview--flymake-diagnostic-line diag)))
                (setcdr cell (cons line (cdr cell)))))))
-       (when (and (boundp 'flycheck-current-errors)
-                  (fboundp 'flycheck-error-line)
-                  (fboundp 'flycheck-error-level))
-         (dolist (err (symbol-value 'flycheck-current-errors))
-           (let ((level (scrollview--diagnostic-level
-                         (flycheck-error-level err))))
-             (when-let* ((line (flycheck-error-line err)))
-               (let ((cell (assq level result)))
-                 (setcdr cell (cons line (cdr cell))))))))
        (mapcar (lambda (cell)
                  (cons (car cell)
                        (scrollview--clamp-lines (cdr cell) buffer-lines)))
                result)))))
 
 (defun scrollview--collect-diagnostic-lines (level &rest _)
-  "Collect diagnostic lines for LEVEL from Flymake and loaded Flycheck."
+  "Collect Flymake diagnostic lines for LEVEL."
   (cdr (assq level (scrollview--diagnostic-lines))))
 
 (defun scrollview--regexp-lines (pattern)
@@ -893,10 +882,6 @@ snapshot, so an unchanged command allocates no per-overlay cons cells."
   (when (fboundp 'flymake--publish-diagnostics)
     (advice-add 'flymake--publish-diagnostics
                 :after #'scrollview--after-diagnostics-update)))
-
-(with-eval-after-load 'flycheck
-  (add-hook 'flycheck-after-syntax-check-hook
-            #'scrollview--after-diagnostics-update))
 
 (with-eval-after-load 'flyspell
   (dolist (function '(flyspell-highlight-incorrect-region

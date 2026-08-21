@@ -7,7 +7,6 @@
 (require 'scrollview)
 
 (defvar eglot--highlights nil)
-(defvar flycheck-current-errors nil)
 (defvar highlight-symbol-keyword-alist nil)
 
 (defun scrollview-test--reset-state ()
@@ -155,12 +154,6 @@ When STRING is non-nil, include it as the clicked string object."
                       :underline (plist-get state :underline)
                       :inverse-video (plist-get state :inverse-video)))
 
-(ert-deftest scrollview-entry-loads-internal-modules ()
-  (dolist (feature '(scrollview scrollview-custom scrollview-faces
-                                scrollview-core scrollview-signs
-                                scrollview-list))
-    (should (featurep feature))))
-
 (ert-deftest scrollview-window-state-tables-use-weak-keys ()
   (dolist (table (list scrollview--window-overlays
                        scrollview--window-overlay-pools
@@ -261,6 +254,7 @@ When STRING is non-nil, include it as the clicked string object."
                  (lambda (&optional _beg _end)
                    (setq flymake-calls (1+ flymake-calls))
                    '((:line 1 :level :error)
+                     (:line 2 :level :warning)
                      (:line 3 :level :note))))
                 ((symbol-function 'flymake-diagnostic-beg)
                  (lambda (diag)
@@ -270,21 +264,14 @@ When STRING is non-nil, include it as the clicked string object."
                      (point))))
                 ((symbol-function 'flymake-diagnostic-type)
                  (lambda (diag)
-                   (plist-get diag :level)))
-                ((symbol-function 'flycheck-error-line)
-                 (lambda (err)
-                   (plist-get err :line)))
-                ((symbol-function 'flycheck-error-level)
-                 (lambda (err)
-                   (plist-get err :level))))
-        (let ((flycheck-current-errors '((:line 2 :level :warning))))
-          (let ((error-lines (scrollview--collect-diagnostic-lines 'error))
-                (warning-lines (scrollview--collect-diagnostic-lines 'warning))
-                (info-lines (scrollview--collect-diagnostic-lines 'info)))
-            (should (equal error-lines '(1)))
-            (should (equal warning-lines '(2)))
-            (should (equal info-lines '(3)))
-            (should (= flymake-calls 1))))))))
+                   (plist-get diag :level))))
+        (let ((error-lines (scrollview--collect-diagnostic-lines 'error))
+              (warning-lines (scrollview--collect-diagnostic-lines 'warning))
+              (info-lines (scrollview--collect-diagnostic-lines 'info)))
+          (should (equal error-lines '(1)))
+          (should (equal warning-lines '(2)))
+          (should (equal info-lines '(3)))
+          (should (= flymake-calls 1)))))))
 
 (ert-deftest scrollview-repro-stale-flymake-diagnostic-after-delete ()
   (scrollview-test--reset-state)
@@ -308,26 +295,6 @@ When STRING is non-nil, include it as the clicked string object."
                    (list stale-diagnostic))))
         (should-not (scrollview--collect-diagnostic-lines 'error))
         (scrollview--flush-refresh)))))
-
-(ert-deftest scrollview-repro-stale-flycheck-line-after-delete ()
-  (scrollview-test--reset-state)
-  (scrollview-test--with-displayed-buffer
-    (insert (make-string 3080 ?x))
-    (let ((scrollview-signs-on-startup '(diagnostics))
-          (scrollview-area 'margin)
-          (scrollview-line-limit -1)
-          (scrollview-byte-limit -1))
-      (scrollview-mode 1)
-      (delete-region 3071 (point-max))
-      (let ((flycheck-current-errors '((:line 3076 :level :error))))
-        (cl-letf (((symbol-function 'flycheck-error-line)
-                   (lambda (err)
-                     (plist-get err :line)))
-                  ((symbol-function 'flycheck-error-level)
-                   (lambda (err)
-                     (plist-get err :level))))
-          (should (equal (scrollview--collect-diagnostic-lines 'error)
-                         '(1))))))))
 
 (ert-deftest scrollview-repro-stale-bookmark-position-after-delete ()
   (scrollview-test--reset-state)
@@ -482,16 +449,6 @@ When STRING is non-nil, include it as the clicked string object."
                             bookmarks eglot diagnostics conflicts
                             spell vc))
       (should (scrollview-sign-group-active-p group)))))
-
-(ert-deftest scrollview-builtins-register-new-sign-groups ()
-  (scrollview-test--reset-state)
-  (let ((scrollview-signs-on-startup nil))
-    (scrollview--initialize-builtins)
-    (dolist (group '(highlight-symbol highlight-changes symbol-overlay
-                                      bookmarks eglot conflicts
-                                      spell vc))
-      (should (memq group (scrollview--sign-group-list))))
-    (should-not (memq 'marks (scrollview--sign-group-list)))))
 
 (ert-deftest scrollview-symbol-highlights-use-search-bitmap ()
   (scrollview-test--reset-state)

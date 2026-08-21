@@ -280,9 +280,6 @@ render without painting a background."
 (with-eval-after-load 'flymake
   (scrollview--sync-diagnostic-faces))
 
-(with-eval-after-load 'flycheck
-  (scrollview--sync-diagnostic-faces))
-
 
 
 (provide 'scrollview-faces)
