@@ -40,6 +40,14 @@
                #'scrollview--window-size-change)
   (remove-hook 'post-command-hook #'scrollview--post-command)
   (remove-hook 'post-command-hook #'scrollview--after-eglot-post-command)
+  (remove-hook 'window-selection-change-functions #'scrollview--selection-change)
+  (remove-hook 'clone-indirect-buffer-hook #'scrollview--register-clone)
+  (remove-function after-focus-change-function #'scrollview--focus-change)
+  (remove-hook 'after-load-functions #'scrollview--maybe-integrate-eglot)
+  (when (fboundp 'eglot--async-request)
+    (advice-remove 'eglot--async-request #'scrollview--eglot-request))
+  (setq scrollview--enabled-buffers (make-hash-table :test #'eq :weakness 'key))
+  (setq scrollview--managed-windows (scrollview--make-window-table))
   (advice-remove 'lazy-highlight-cleanup
                  #'scrollview--after-lazy-highlight-cleanup)
   (setq scrollview--global-hooks-installed nil)
@@ -116,6 +124,11 @@
              (scrollview-mode -1)))
          (when (eq (current-buffer) buffer)
            (switch-to-buffer original-buffer))
+         ;; Tests may associate this synthetic buffer with a fictitious file.
+         ;; Never prompt to save it when running ERT through emacsclient.
+         (with-current-buffer buffer
+           (set-buffer-modified-p nil)
+           (setq buffer-file-name nil))
          (kill-buffer buffer))
        (scrollview-test--reset-state))))
 
@@ -300,13 +313,13 @@ When STRING is non-nil, include it as the clicked string object."
   (let ((file (make-temp-file "scrollview-bookmark-stale")))
     (unwind-protect
         (with-temp-buffer
-          (setq buffer-file-name file)
-          (insert (make-string 3080 ?x))
-          (delete-region 3071 (point-max))
-          (let ((bookmark-alist
-                 `(("stale" . ((filename . ,file) (position . 3076))))))
-            (should (equal (scrollview--collect-bookmark-lines nil)
-                           '(1)))))
+          (let ((buffer-file-name file))
+            (insert (make-string 3080 ?x))
+            (delete-region 3071 (point-max))
+            (let ((bookmark-alist
+                   `(("stale" . ((filename . ,file) (position . 3076))))))
+              (should (equal (scrollview--collect-bookmark-lines nil)
+                             '(1))))))
       (delete-file file))))
 
 (ert-deftest scrollview-repro-stale-symbol-overlay-after-delete ()
@@ -1288,6 +1301,253 @@ When STRING is non-nil, include it as the clicked string object."
     (should (equal called (list window 'scroll)))
     (should-not (timerp scrollview--refresh-timer))))
 
+(ert-deftest scrollview-selection-default-preserves-caches-and-queue ()
+  (scrollview-test--reset-state)
+  (scrollview-test--with-displayed-buffer
+    (insert "text\n")
+    (scrollview-mode 1)
+    (when (timerp scrollview--refresh-timer) (cancel-timer scrollview--refresh-timer))
+    (setq scrollview--refresh-timer nil)
+    (clrhash scrollview--pending-windows)
+    (let ((scrollview-current-window-only nil)
+          (generation scrollview--sign-cache-generation))
+      (setq scrollview--last-selected-window nil)
+      (puthash (selected-window) 'preserved scrollview--window-sign-cache)
+      (scrollview--selection-change (selected-frame))
+      (should (= generation scrollview--sign-cache-generation))
+      (should (eq (gethash (selected-window) scrollview--window-sign-cache) 'preserved))
+      (should-not scrollview--refresh-timer)
+      (should (zerop (hash-table-count scrollview--pending-windows)))
+      (should-not (memq #'scrollview--post-command (default-value 'post-command-hook))))))
+
+(ert-deftest scrollview-selection-current-only-cleans-old-window ()
+  (scrollview-test--reset-state)
+  (scrollview-test--with-displayed-buffer
+    (scrollview-test--insert-lines 100)
+    (let* ((scrollview-current-window-only t)
+           (scrollview-area 'margin)
+           (old (selected-window))
+           (new (split-window-right)))
+      (scrollview-mode 1)
+      (scrollview-refresh old)
+      (should (gethash old scrollview--window-overlays))
+      (setq scrollview--last-selected-window old)
+      (select-window new)
+      (scrollview--selection-change (selected-frame))
+      (scrollview--flush-refresh)
+      (should-not (gethash old scrollview--window-overlays))
+      (should (gethash new scrollview--window-overlays))
+      (delete-window new))))
+
+(ert-deftest scrollview-disabled-window-does-not-schedule-work ()
+  (scrollview-test--reset-state)
+  (scrollview-test--with-displayed-buffer
+    (scrollview--schedule-refresh (selected-window))
+    (scrollview--schedule-refresh)
+    (should-not scrollview--refresh-timer)
+    (should-not scrollview--pending-all)
+    (should (zerop (hash-table-count scrollview--pending-windows)))))
+
+(ert-deftest scrollview-suspended-layout-remains-discoverable ()
+  (scrollview-test--reset-state)
+  (scrollview-test--with-displayed-buffer
+    (insert "cover\ntext\n")
+    (let ((window (selected-window)) (scrollview-area 'margin))
+      (cl-letf (((symbol-function 'window-default-font-height) (lambda (_) 20)))
+        (put-text-property 1 2 'display '(image :height 100))
+        (scrollview-mode 1)
+        (scrollview-refresh window)
+        (should-not (gethash window scrollview--window-overlays))
+        (should (memq window (scrollview--relevant-windows)))
+        (with-silent-modifications (remove-text-properties 1 2 '(display nil)))
+        (scrollview--schedule-refresh)
+        (scrollview--flush-refresh)
+        (should (gethash window scrollview--window-overlays))))))
+
+(ert-deftest scrollview-global-target-query-does-not-enumerate-hidden-buffers ()
+  (scrollview-test--reset-state)
+  (scrollview-test--with-displayed-buffer
+    (scrollview-mode 1)
+    (let ((window (selected-window)))
+      (cl-letf (((symbol-function 'get-buffer-window-list)
+                 (lambda (&rest _) (ert-fail "queried every registered buffer")))
+                ((symbol-function 'scrollview--all-windows)
+                 (lambda () (ert-fail "enumerated unrelated windows"))))
+        (should (equal (scrollview--relevant-windows) (list window)))))))
+
+(ert-deftest scrollview-disable-cleans-state-after-window-changed-buffer ()
+  (scrollview-test--reset-state)
+  (scrollview-test--with-displayed-buffer
+    (insert "source\n")
+    (let ((source (current-buffer)) (window (selected-window))
+          (scrollview-area 'margin)
+          (keeper (generate-new-buffer " *scrollview-keeper*"))
+          (other (generate-new-buffer " *scrollview-disabled*")))
+      (unwind-protect
+          (progn
+            (scrollview-mode 1)
+            (with-current-buffer keeper (scrollview-mode 1))
+            (scrollview-refresh window)
+            (set-window-buffer window other)
+            (with-current-buffer source (scrollview-mode -1))
+            (should scrollview--global-hooks-installed)
+            (should-not (gethash window scrollview--window-overlays))
+            (should-not (gethash window scrollview--window-render-state))
+            (should-not (gethash window scrollview--window-margins)))
+        (set-window-buffer window source)
+        (kill-buffer other)
+        (kill-buffer keeper)))))
+
+(ert-deftest scrollview-global-targets-include-stale-display-for-cleanup ()
+  (scrollview-test--reset-state)
+  (scrollview-test--with-displayed-buffer
+    (scrollview-test--insert-lines 60)
+    (let ((window (selected-window)) (scrollview-area 'margin)
+          (other (generate-new-buffer " *scrollview-disabled*")))
+      (unwind-protect
+          (progn
+            (scrollview-mode 1)
+            (scrollview-refresh window)
+            (set-window-buffer window other)
+            (should (memq window (scrollview--relevant-windows)))
+            (scrollview--window-configuration-change)
+            (scrollview--flush-refresh)
+            (should-not (gethash window scrollview--window-overlays))
+            (should-not (gethash window scrollview--window-margins)))
+        (set-window-buffer window (current-buffer))
+        (kill-buffer other)))))
+
+(ert-deftest scrollview-frame-resize-queues-only-that-frame ()
+  (scrollview-test--reset-state)
+  (scrollview-test--with-displayed-buffer
+    (let* ((source (current-buffer))
+           (first (selected-frame))
+           (second (make-frame `((terminal . ,(frame-terminal first))
+                                 (name . "scrollview-test-peer"))))
+           (buffer (generate-new-buffer " *scrollview-peer-buffer*"))
+           (first-window (frame-selected-window first))
+           (second-window (frame-selected-window second)))
+      (unwind-protect
+          (progn
+            (set-window-buffer first-window source)
+            (with-current-buffer source (scrollview-mode 1))
+            (set-window-buffer second-window buffer)
+            (with-current-buffer buffer (insert "peer\n") (scrollview-mode 1))
+            (when (timerp scrollview--refresh-timer) (cancel-timer scrollview--refresh-timer))
+            (setq scrollview--refresh-timer nil scrollview--pending-all nil)
+            (clrhash scrollview--pending-windows)
+            (scrollview--window-size-change first)
+            (should (gethash first-window scrollview--pending-windows))
+            (should-not (gethash second-window scrollview--pending-windows))
+            (should-not scrollview--pending-all))
+        (delete-frame second t)
+        (kill-buffer buffer)))))
+
+(ert-deftest scrollview-last-buffer-releases-hooks-and-timers ()
+  (scrollview-test--reset-state)
+  (scrollview-test--with-displayed-buffer
+    (scrollview-mode 1)
+    (scrollview-mode 1)
+    (should (= 1 (hash-table-count scrollview--enabled-buffers)))
+    (should (memq #'scrollview--selection-change
+                  (default-value 'window-selection-change-functions)))
+    (scrollview--schedule-refresh (selected-window))
+    (let ((timer scrollview--refresh-timer))
+      (scrollview-mode -1)
+      (should-not (memq timer timer-idle-list)))
+    (should-not scrollview--global-hooks-installed)
+    (should-not scrollview--refresh-timer)
+    (should-not (memq #'scrollview--selection-change
+                      (default-value 'window-selection-change-functions)))
+    (should-not (memq #'scrollview--window-size-change
+                      (default-value 'window-size-change-functions)))
+    (should-not (memq #'scrollview--maybe-integrate-eglot
+                      (default-value 'after-load-functions)))
+    (when (fboundp 'eglot--async-request)
+      (should-not (advice-member-p #'scrollview--eglot-request 'eglot--async-request)))
+    (scrollview-mode 1)
+    (should scrollview--global-hooks-installed)))
+
+(ert-deftest scrollview-current-only-focus-change-across-frames ()
+  (scrollview-test--reset-state)
+  (scrollview-test--with-displayed-buffer
+    (scrollview-test--insert-lines 60)
+    (let* ((buffer (current-buffer)) (frame (selected-frame))
+           (first (selected-window))
+           (scrollview-area 'margin) (scrollview-current-window-only t)
+           (peer (make-frame `((terminal . ,(frame-terminal frame))
+                               (name . "scrollview-focus-peer"))))
+           (second (frame-selected-window peer)))
+      (unwind-protect
+          (progn
+            (set-window-buffer first buffer)
+            (set-window-buffer second buffer)
+            (with-selected-frame frame
+              (with-current-buffer buffer (scrollview-mode 1))
+              (scrollview-refresh first))
+            (setq scrollview--last-selected-window first)
+            (with-selected-frame peer
+              (scrollview--focus-change)
+              (scrollview--flush-refresh))
+            (should-not (gethash first scrollview--window-overlays))
+            (should (gethash second scrollview--window-overlays)))
+        (delete-frame peer t)))))
+
+(ert-deftest scrollview-pending-window-batch-prepares-once ()
+  (scrollview-test--reset-state)
+  (scrollview-test--with-displayed-buffer
+    (let ((first (selected-window)) (second (split-window-right))
+          (preparations 0) refreshed)
+      (scrollview-mode 1)
+      (scrollview--schedule-refresh first)
+      (scrollview--schedule-refresh second)
+      (cl-letf (((symbol-function 'scrollview--sync-faces)
+                 (lambda () (cl-incf preparations)))
+                ((symbol-function 'scrollview--refresh-window)
+                 (lambda (window) (push window refreshed))))
+        (scrollview--flush-refresh))
+      (should (= preparations 1))
+      (should (= (length refreshed) 2))
+      (delete-window second))))
+
+(ert-deftest scrollview-clone-and-kill-maintain-shared-ownership ()
+  (scrollview-test--reset-state)
+  (scrollview-test--with-displayed-buffer
+    (scrollview-mode 1)
+    (let ((clone (clone-indirect-buffer " *scrollview-owned-clone*" nil)))
+      (unwind-protect
+          (progn
+            (should (= 2 (hash-table-count scrollview--enabled-buffers)))
+            (scrollview-mode -1)
+            (should scrollview--global-hooks-installed)
+            (kill-buffer clone)
+            (should-not scrollview--global-hooks-installed)
+            (should (zerop (hash-table-count scrollview--enabled-buffers))))
+        (when (buffer-live-p clone) (kill-buffer clone))))))
+
+(ert-deftest scrollview-major-mode-change-releases-ownership ()
+  (scrollview-test--reset-state)
+  (with-temp-buffer
+    (scrollview-mode 1)
+    (let ((scrollview-excluded-modes '(fundamental-mode))) (fundamental-mode))
+    (should-not (gethash (current-buffer) scrollview--enabled-buffers))
+    (should-not scrollview--global-hooks-installed)))
+
+(ert-deftest scrollview-refresh-preserves-requests-enqueued-by-rendering ()
+  (scrollview-test--reset-state)
+  (scrollview-test--with-displayed-buffer
+    (let ((first (selected-window)) (second (split-window-right)))
+      (scrollview-mode 1)
+      (clrhash scrollview--pending-windows)
+      (scrollview--schedule-refresh first)
+      (cl-letf (((symbol-function 'scrollview--refresh-window)
+                 (lambda (&optional window)
+                   (when (eq window first) (scrollview--schedule-refresh second)))))
+        (scrollview--flush-refresh))
+      (should (gethash second scrollview--pending-windows))
+      (should (timerp scrollview--refresh-timer))
+      (delete-window second))))
+
 (ert-deftest scrollview-multiline-display-replacement-suspends-scroll-refresh ()
   (scrollview-test--reset-state)
   (scrollview-test--with-displayed-buffer
@@ -1332,6 +1592,167 @@ When STRING is non-nil, include it as the clicked string object."
         (scrollview--after-window-scroll window nil)
         (should-not called)
         (should-not (timerp scrollview--refresh-timer))))))
+
+(ert-deftest scrollview-image-layout-reuses-unchanged-negative-scan ()
+  (scrollview-test--with-displayed-buffer
+    (insert "ordinary text\n")
+    (let ((scan (symbol-function 'scrollview--scan-image-layout))
+          (calls 0))
+      (cl-letf (((symbol-function 'scrollview--scan-image-layout)
+                 (lambda (height &optional uncached)
+                   (cl-incf calls)
+                   (funcall scan height uncached))))
+        (dotimes (_ 5)
+          (should-not (scrollview--tall-image-display-p (selected-window))))
+        (should (= calls 1))))))
+
+(ert-deftest scrollview-image-layout-cold-check-does-not-scan-categories ()
+  (scrollview-test--with-displayed-buffer
+    (insert "ordinary text\n")
+    (cl-letf (((symbol-function 'text-property-not-all)
+               (lambda (&rest _) (ert-fail "extra traversal on a one-shot cold check"))))
+      (should-not (scrollview--tall-image-display-p (selected-window))))))
+
+(ert-deftest scrollview-image-layout-notices-silent-property-changes ()
+  (scrollview-test--with-displayed-buffer
+    (insert "image text\n")
+    (let ((chars-tick (buffer-chars-modified-tick)))
+      (cl-letf (((symbol-function 'window-default-font-height) (lambda (_) 20)))
+        (should-not (scrollview--tall-image-display-p (selected-window)))
+        (with-silent-modifications
+          (put-text-property 1 2 'display '(image :height 100)))
+        (should (= chars-tick (buffer-chars-modified-tick)))
+        (should (scrollview--tall-image-display-p (selected-window)))
+        (with-silent-modifications (remove-text-properties 1 2 '(display nil)))
+        (should-not (scrollview--tall-image-display-p (selected-window)))))))
+
+(ert-deftest scrollview-image-layout-notices-in-place-spec-mutations ()
+  (scrollview-test--with-displayed-buffer
+    (insert "first second\n")
+    (let ((image (list 'image :height 20))
+          (space (list 'space :height 100)))
+      (put-text-property 1 2 'display image)
+      (put-text-property 7 8 'display space)
+      (cl-letf (((symbol-function 'window-default-font-height) (lambda (_) 20)))
+        (should-not (scrollview--tall-image-display-p (selected-window)))
+        (let ((tick (buffer-modified-tick)))
+          (setf (plist-get (cdr image) :height) 100)
+          (should (= tick (buffer-modified-tick)))
+          (should (scrollview--tall-image-display-p (selected-window)))
+          (setf (plist-get (cdr image) :height) 10)
+          (should-not (scrollview--tall-image-display-p (selected-window)))
+          (setcar space 'image)
+          (should (scrollview--tall-image-display-p (selected-window)))
+          (setcar space 'space)
+          (should-not (scrollview--tall-image-display-p (selected-window))))))))
+
+(ert-deftest scrollview-image-layout-positive-witness-keeps-early-exit ()
+  (scrollview-test--with-displayed-buffer
+    (insert "image\n" (make-string 10000 ?x))
+    (put-text-property 1 2 'display '(image :height 100))
+    (cl-letf (((symbol-function 'window-default-font-height) (lambda (_) 20))
+              ((symbol-function 'next-single-property-change)
+               (lambda (&rest _) (ert-fail "scanned beyond the first tall image"))))
+      (should (scrollview--tall-image-display-p (selected-window)))
+      (should (scrollview--tall-image-display-p (selected-window))))))
+
+(ert-deftest scrollview-image-layout-tracks-font-height-and-restriction ()
+  (scrollview-test--with-displayed-buffer
+    (insert "image\nplain\n")
+    (put-text-property 1 2 'display '(image :height 60))
+    (let ((font-height 20))
+      (cl-letf (((symbol-function 'window-default-font-height)
+                 (lambda (_) font-height)))
+        (should (scrollview--tall-image-display-p (selected-window)))
+        (setq font-height 40)
+        (should-not (scrollview--tall-image-display-p (selected-window)))
+        (setq font-height 10)
+        (should (scrollview--tall-image-display-p (selected-window)))
+        (narrow-to-region 7 (point-max))
+        (should-not (scrollview--tall-image-display-p (selected-window)))
+        (widen)
+        (should (scrollview--tall-image-display-p (selected-window)))))))
+
+(ert-deftest scrollview-image-layout-notices-inherited-property-changes ()
+  (scrollview-test--with-displayed-buffer
+    (insert "category text\n")
+    (let ((category (make-symbol "scrollview-image-category")))
+      (put-text-property 3 4 'category category)
+      (cl-letf (((symbol-function 'window-default-font-height) (lambda (_) 20)))
+        (should-not (scrollview--tall-image-display-p (selected-window)))
+        (let ((tick (buffer-modified-tick)))
+          (put category 'display '(image :height 100))
+          (should (= tick (buffer-modified-tick)))
+          (should (scrollview--tall-image-display-p (selected-window)))
+          (put category 'display nil)
+          (should-not (scrollview--tall-image-display-p (selected-window))))))))
+
+(ert-deftest scrollview-image-layout-notices-default-property-changes ()
+  (scrollview-test--with-displayed-buffer
+    (insert "plain text\n")
+    (let ((default-text-properties nil))
+      (cl-letf (((symbol-function 'window-default-font-height) (lambda (_) 20)))
+        (should-not (scrollview--tall-image-display-p (selected-window)))
+        (setq default-text-properties '(display (image :height 100)))
+        (should (scrollview--tall-image-display-p (selected-window)))
+        (setq default-text-properties nil)
+        (should-not (scrollview--tall-image-display-p (selected-window)))))))
+
+(ert-deftest scrollview-image-layout-tracks-display-aliases ()
+  (scrollview-test--with-displayed-buffer
+    (insert "aliased display\n")
+    (put-text-property 1 2 'scrollview-test-display '(image :height 100))
+    (let ((char-property-alias-alist nil))
+      (cl-letf (((symbol-function 'window-default-font-height) (lambda (_) 20)))
+        (should-not (scrollview--tall-image-display-p (selected-window)))
+        (setq char-property-alias-alist '((display scrollview-test-display)))
+        (should (scrollview--tall-image-display-p (selected-window)))
+        (setq char-property-alias-alist nil)
+        (should-not (scrollview--tall-image-display-p (selected-window)))))))
+
+(ert-deftest scrollview-image-layout-notices-indirect-buffer-edits ()
+  (scrollview-test--with-displayed-buffer
+    (insert "shared text\n")
+    (let ((base (current-buffer))
+          (indirect (make-indirect-buffer (current-buffer)
+                                         (generate-new-buffer-name " *scrollview-indirect*"))))
+      (unwind-protect
+          (cl-letf (((symbol-function 'window-default-font-height) (lambda (_) 20)))
+            (should-not (scrollview--tall-image-display-p (selected-window)))
+            (with-current-buffer indirect
+              (with-silent-modifications
+                (put-text-property 1 2 'display '(image :height 100))))
+            (should (eq base (window-buffer (selected-window))))
+            (should (scrollview--tall-image-display-p (selected-window))))
+        (kill-buffer indirect)))))
+
+(ert-deftest scrollview-ineligible-window-skips-layout-scans ()
+  (scrollview-test--with-displayed-buffer
+    (insert "excluded text\n")
+    (cl-letf (((symbol-function 'scrollview--multiline-display-replacement-p)
+               (lambda (_) (ert-fail "scanned a disabled/excluded buffer")))
+              ((symbol-function 'scrollview--tall-image-display-p)
+               (lambda (_) (ert-fail "scanned a disabled/excluded buffer"))))
+      (setq-local scrollview-mode nil)
+      (should-not (scrollview--window-eligible-p (selected-window)))
+      (setq-local scrollview-mode t)
+      (let ((scrollview-excluded-modes '(fundamental-mode)))
+        (should-not (scrollview--window-eligible-p (selected-window)))))))
+
+(ert-deftest scrollview-all-window-refresh-checks-eligibility-once ()
+  (scrollview-test--reset-state)
+  (scrollview-test--with-displayed-buffer
+    (scrollview-test--insert-lines 30)
+    (scrollview-mode 1)
+    (let ((window (selected-window))
+          (calls 0)
+          (eligible (symbol-function 'scrollview--window-eligible-p)))
+      (cl-letf (((symbol-function 'scrollview--all-windows) (lambda () (list window)))
+                ((symbol-function 'scrollview--fringe-available-p) (lambda (_) t))
+                ((symbol-function 'scrollview--window-eligible-p)
+                 (lambda (target) (cl-incf calls) (funcall eligible target))))
+        (scrollview--refresh-now)
+        (should (= calls 1))))))
 
 (ert-deftest scrollview-scroll-throttling-keeps-one-timer-per-window ()
   (scrollview-test--reset-state)
@@ -1713,21 +2134,21 @@ When STRING is non-nil, include it as the clicked string object."
   (let ((file (make-temp-file "scrollview-bookmark")))
     (unwind-protect
         (with-temp-buffer
-          (setq buffer-file-name file)
-          (insert "one\ntwo\nthree\n")
-          (let ((line-three (save-excursion
-                              (goto-char (point-min))
-                              (forward-line 2)
-                              (point)))
-                (bookmark-alist nil))
-            (setq bookmark-alist
-                  `(("first" . ((filename . ,file) (position . 1)))
-                    ("third" . ((filename . ,file)
-                                (position . ,line-three)))
-                    ("other" . ((filename . "/tmp/scrollview-other")
-                                (position . 1)))))
-            (should (equal (scrollview--collect-bookmark-lines nil)
-                           '(1 3)))))
+          (let ((buffer-file-name file))
+            (insert "one\ntwo\nthree\n")
+            (let ((line-three (save-excursion
+                                (goto-char (point-min))
+                                (forward-line 2)
+                                (point)))
+                  (bookmark-alist nil))
+              (setq bookmark-alist
+                    `(("first" . ((filename . ,file) (position . 1)))
+                      ("third" . ((filename . ,file)
+                                  (position . ,line-three)))
+                      ("other" . ((filename . "/tmp/scrollview-other")
+                                  (position . 1)))))
+              (should (equal (scrollview--collect-bookmark-lines nil)
+                             '(1 3))))))
       (delete-file file))))
 
 (ert-deftest scrollview-eglot-collector-uses-highlight-overlays ()
@@ -1744,6 +2165,59 @@ When STRING is non-nil, include it as the clicked string object."
                            '(1 3))))
         (delete-overlay first)
         (delete-overlay second)))))
+
+(ert-deftest scrollview-eglot-token-ignores-foreign-overlays ()
+  (with-temp-buffer
+    (insert "here\n")
+    (let ((other (generate-new-buffer " *scrollview-eglot-foreign*")) overlay)
+      (unwind-protect
+          (progn
+            (with-current-buffer other
+              (insert "there\n")
+              (setq overlay (make-overlay 1 2)))
+            (should-not (scrollview--eglot-highlight-token-value (list overlay)))
+            (should (scrollview--eglot-highlight-token-matches-p (list overlay) nil)))
+        (kill-buffer other)))))
+
+(ert-deftest scrollview-eglot-reply-notifies-old-and-new-buffers ()
+  (scrollview-test--reset-state)
+  (scrollview-test--with-displayed-buffer
+    (insert "alpha\n")
+    (let* ((source (current-buffer)) (first (selected-window))
+           (second (split-window-right))
+           (other (generate-new-buffer " *scrollview-eglot-new*"))
+           (scrollview-signs-on-startup '(eglot)) (eglot--highlights nil)
+           reply)
+      (unwind-protect
+          (progn
+            (scrollview-mode 1)
+            (set-window-buffer second other)
+            (with-current-buffer other (insert "alpha\n") (scrollview-mode 1))
+            (setq eglot--highlights (list (make-overlay 1 2 source)))
+            (with-current-buffer source (scrollview--after-eglot-post-command))
+            (with-current-buffer other (scrollview--after-eglot-post-command))
+            (when (timerp scrollview--refresh-timer) (cancel-timer scrollview--refresh-timer))
+            (setq scrollview--refresh-timer nil scrollview--pending-all nil)
+            (clrhash scrollview--pending-windows)
+            (let ((generation scrollview--sign-cache-generation))
+              (should
+               (eq (scrollview--eglot-request
+                    (lambda (_server _method _params &rest args)
+                      (setq reply (plist-get args :success-fn)) 'sent)
+                    'server :textDocument/documentHighlight nil
+                    :success-fn
+                    (lambda (_result)
+                      (mapc #'delete-overlay eglot--highlights)
+                      (setq eglot--highlights (list (make-overlay 1 2 other)))
+                      'done))
+                   'sent))
+              (should (eq (funcall reply nil) 'done))
+              (should (= generation scrollview--sign-cache-generation))
+              (should (gethash first scrollview--pending-windows))
+              (should (gethash second scrollview--pending-windows))))
+        (mapc #'delete-overlay eglot--highlights)
+        (delete-window second)
+        (kill-buffer other)))))
 
 (ert-deftest scrollview-eglot-post-command-refreshes-on-highlight-change ()
   (scrollview-test--reset-state)

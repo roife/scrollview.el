@@ -21,6 +21,9 @@
 (require 'scrollview-signs)
 (require 'scrollview-list)
 
+(declare-function scrollview--register-buffer "scrollview-core" ())
+(declare-function scrollview--release-buffer "scrollview-core" ())
+
 
 ;;; Modes
 
@@ -75,8 +78,8 @@
   :keymap scrollview-mode-map
   (if scrollview-mode
       (progn
+        (scrollview--register-buffer)
         (scrollview--initialize-builtins)
-        (scrollview--install-global-hooks)
         (add-hook 'window-scroll-functions
                   #'scrollview--after-window-scroll nil t)
         (add-hook 'before-change-functions
@@ -85,8 +88,6 @@
                   #'scrollview--after-change nil t)
         (add-hook 'post-command-hook
                   #'scrollview--after-eglot-post-command nil t)
-        (add-hook 'kill-buffer-hook
-                  #'scrollview--delete-buffer-overlays nil t)
         (dolist (window (get-buffer-window-list (current-buffer) nil t))
           (scrollview--schedule-refresh window)))
     (remove-hook 'window-scroll-functions
@@ -97,9 +98,9 @@
                  #'scrollview--after-change t)
     (remove-hook 'post-command-hook
                  #'scrollview--after-eglot-post-command t)
-    (remove-hook 'kill-buffer-hook
-                 #'scrollview--delete-buffer-overlays t)
-    (scrollview--delete-buffer-overlays (current-buffer))))
+    (remove-hook 'kill-buffer-hook #'scrollview--release-buffer t)
+    (remove-hook 'change-major-mode-hook #'scrollview--release-buffer t)
+    (scrollview--release-buffer)))
 
 ;;;###autoload
 (define-globalized-minor-mode global-scrollview-mode

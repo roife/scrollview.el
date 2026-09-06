@@ -73,6 +73,30 @@ Common alternatives:
 
 Restricted mode keeps the scrollbar and skips sign collection.
 
+### Refresh events
+
+Ordinary window selection changes preserve existing displays and caches.
+With `scrollview-current-window-only` enabled, selection/focus events instead
+hide the old window's indicators and show the new window's indicators.
+
+Buffer changes update windows showing that buffer. Layout and size events
+inspect only the affected frame, and global sign-data changes use the managed
+window registry. Windows retaining old overlays or margins remain eligible for
+cleanup after their buffer changes. Multiple queued targets share one refresh
+preparation pass; requests arriving during that pass are preserved.
+
+The last buffer disabling scrollview releases shared window/focus listeners
+and pending refresh timers. Killing buffers, changing major mode and cloning
+indirect buffers maintain this ownership. A global mode can subsequently enable
+scrollview again in an eligible new major mode. An explicit full
+`scrollview-refresh` still discovers newly created windows across frames.
+
+Eglot updates are buffer-specific. Versions exposing `eglot--async-request`
+also notify old/new highlight owners when asynchronous replies arrive. The
+existing local post-command check remains as a fallback. Custom collectors
+whose external data changes should request the appropriate data refresh rather
+than relying on incidental window selection changes.
+
 ## Built-In Signs
 
 | Group | Default priority | Default face | Fringe symbol | Margin glyph |
@@ -172,3 +196,13 @@ Remove a spec with:
 ```elisp
 (scrollview-deregister-sign-spec my-scrollview-todo-sign)
 ```
+
+## Performance validation
+
+The image-layout cache and window eligibility changes have separate ablations,
+including cold caches, edits, scrolling and buffers with many display
+properties. See [measurements and reproduction instructions](test/PERFORMANCE.md)
+for the baseline and independent ablations of each rendering change, including
+raw samples. The subsequent [dispatch and lifecycle measurements](test/DISPATCH-PERFORMANCE.md)
+independently remove focus filtering, target filtering and listener lifetime
+management.

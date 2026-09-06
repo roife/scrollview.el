@@ -17,6 +17,8 @@
 (require 'scrollview-faces)
 
 (autoload 'scrollview--initialize-builtins "scrollview-signs")
+(declare-function scrollview--after-eglot-post-command "scrollview-signs" ())
+(defvar eglot--highlights)
 
 (defvar-local scrollview-mode nil
   "Non-nil when `scrollview-mode' is enabled.")
@@ -73,6 +75,12 @@
 (defvar scrollview--global-hooks-installed nil
   "Non-nil when global refresh hooks have been installed.")
 
+(defvar scrollview--enabled-buffers (make-hash-table :test #'eq :weakness 'key)
+  "Buffers whose local scrollview mode owns the shared event hooks.")
+
+(defvar scrollview--managed-windows (scrollview--make-window-table)
+  "Windows showing registered buffers or retaining state to clean up.")
+
 (defvar scrollview--builtins-initialized nil
   "Non-nil after built-in sign groups have been registered.")
 
@@ -123,6 +131,16 @@ the cached sign item list and on track geometry, so scrolling can reuse it.")
 (defvar-local scrollview--line-change-state nil
   "Line-count state captured by `scrollview--before-change'.")
 
+(defvar-local scrollview--image-layout-cache nil
+  "Cache of [TICK BEG END ALIASES DEFAULTS RESULT] for tall-image detection.
+TICK includes text property changes.  RESULT is a position witnessing a
+tall image, t when inherited properties prevent negative caching, or a list
+of distinct mutable display specs to recheck after a complete scan.  A list
+starting with :unchecked needs category validation before its first reuse.
+The specs themselves are retained, not their heights: callers may mutate
+an image spec without changing the buffer's modification tick.  ALIASES
+and DEFAULTS are snapshots of the corresponding text property settings.")
+
 (defvar-local scrollview--top-line-cache nil
   "Buffer-local cache of (TICK START . LINE) for `scrollview--window-top-line'.
 TICK is `buffer-chars-modified-tick', START is a buffer position, and LINE is
@@ -156,6 +174,53 @@ between START values instead of rescanning from `point-min'.")
                       (push window windows)))
                   'no-minibuf t)
     (nreverse windows)))
+
+(defun scrollview--window-relevant-p (window)
+  "Return non-nil if WINDOW needs rendering or cleanup of old state."
+  (and (window-live-p window)
+       (not (window-minibuffer-p window))
+       (or (with-current-buffer (window-buffer window)
+             (and scrollview-mode (gethash (current-buffer) scrollview--enabled-buffers)
+                  (not (scrollview--excluded-mode-p))
+                  (or (not scrollview-current-window-only)
+                      (eq window (selected-window)))))
+           (gethash window scrollview--window-overlays)
+           (gethash window scrollview--window-overlay-pools)
+           (gethash window scrollview--window-margins)
+           (gethash window scrollview--window-render-state))))
+
+(defun scrollview--remember-window (window)
+  "Update the managed-window registry for WINDOW without scanning its text."
+  (if (scrollview--window-relevant-p window)
+      (puthash window t scrollview--managed-windows)
+    (remhash window scrollview--managed-windows)))
+
+(defun scrollview--discover-frame (frame)
+  "Discover new or changed windows only on the live FRAME."
+  (when (frame-live-p frame)
+    (dolist (window (window-list frame 'no-minibuffer))
+      (scrollview--remember-window window))))
+
+(defun scrollview--relevant-windows (&optional frame)
+  "Return enabled or previously rendered windows, optionally only on FRAME.
+Use the managed-window registry rather than visiting all buffers or windows.
+Keep windows with old state so switching to a disabled buffer still cleans up."
+  (let (windows)
+    (maphash
+     (lambda (window _)
+       (if (scrollview--window-relevant-p window)
+           (when (or (null frame) (eq (window-frame window) frame))
+             (cl-pushnew window windows :test #'eq))
+         (remhash window scrollview--managed-windows)))
+     scrollview--managed-windows)
+    (dolist (table (list scrollview--window-overlays scrollview--window-overlay-pools
+                         scrollview--window-margins scrollview--window-render-state))
+      (maphash (lambda (window _)
+                 (when (and (window-live-p window)
+                            (or (null frame) (eq (window-frame window) frame)))
+                   (cl-pushnew window windows :test #'eq)))
+               table))
+    windows))
 
 (defun scrollview--line-count ()
   "Return the current buffer's line count."
@@ -370,6 +435,45 @@ redisplay and can keep Emacs in an infinite redisplay loop."
               (overlays-at position)))
            positions))))))
 
+(defun scrollview--tall-image-spec-p (display max-height)
+  "Return non-nil if DISPLAY describes an image taller than MAX-HEIGHT."
+  (let ((height (and (eq (car-safe display) 'image)
+                     (plist-get (cdr display) :height))))
+    (and (numberp height) (> height max-height))))
+
+(defun scrollview--scan-image-layout (max-height &optional uncached)
+  "Scan accessible text properties for an image taller than MAX-HEIGHT.
+Cache a positive witness immediately, preserving early exit for images near
+the beginning.  A complete negative scan retains mutable display specs.
+Category properties can change without touching the buffer.  Defer checking
+for them until the result is actually reused, keeping one-shot cold checks
+to one traversal.  UNCACHED means categories are already known to be present."
+  (let* ((beg (point-min))
+         (end (point-max))
+         (tick (buffer-modified-tick))
+         (position beg)
+         (specs (make-hash-table :test #'eq))
+         found)
+    (while (and (< position end) (not found))
+      (let ((display (get-text-property position 'display)))
+        (cond
+         ((scrollview--tall-image-spec-p display max-height)
+          (setq found position))
+         ((consp display)
+          ;; Retain non-image conses too: `setcar' can turn one into an image.
+          (puthash display t specs))))
+      (unless found
+        (setq position (next-single-property-change position 'display nil end))))
+    (setq scrollview--image-layout-cache
+          (vector tick beg end
+                  (copy-tree char-property-alias-alist)
+                  (copy-tree default-text-properties)
+                  (cond
+                   (found)
+                   (uncached t)
+                   (t (cons :unchecked (hash-table-keys specs))))))
+    (and found t)))
+
 (defun scrollview--tall-image-display-p (window)
   "Return non-nil when WINDOW's buffer contains an explicitly tall image.
 Scrollview maps fringe rows to buffer screen lines.  An image whose declared
@@ -379,35 +483,47 @@ redisplay unstable.  Treat an image taller than two default text rows as an
 unsupported display layout."
   (when (window-live-p window)
     (with-current-buffer (window-buffer window)
-      (let ((position (point-min))
-            (limit (point-max))
-            (max-height (* 2 (window-default-font-height window)))
-            found)
-        (while (and (< position limit) (not found))
-          (let* ((display (get-text-property position 'display))
-                 (height (and (eq (car-safe display) 'image)
-                              (plist-get (cdr display) :height))))
-            (when (and (numberp height) (> height max-height))
-              (setq found t)))
-          (unless found
-            (setq position
-                  (next-single-property-change
-                   position 'display nil limit))))
-        found))))
+      (let* ((max-height (* 2 (window-default-font-height window)))
+             (cache scrollview--image-layout-cache)
+             (valid (and cache
+                         (= (aref cache 0) (buffer-modified-tick))
+                         (= (aref cache 1) (point-min))
+                         (= (aref cache 2) (point-max))
+                         (equal (aref cache 3) char-property-alias-alist)
+                         (equal (aref cache 4) default-text-properties)))
+             (result (and valid (aref cache 5))))
+        (cond
+         ((and valid (integerp result)
+               (scrollview--tall-image-spec-p
+                (get-text-property result 'display) max-height))
+          t)
+         ((and valid (eq (car-safe result) :unchecked))
+          (if (text-property-not-all (point-min) (point-max) 'category nil)
+              ;; A category may have acquired a display spec since the scan.
+              (scrollview--scan-image-layout max-height t)
+            (aset cache 5 (cdr result))
+            (cl-some (lambda (display)
+                       (scrollview--tall-image-spec-p display max-height))
+                     (cdr result))))
+         ((and valid (listp result))
+          (cl-some (lambda (display)
+                     (scrollview--tall-image-spec-p display max-height))
+                   result))
+         (t (scrollview--scan-image-layout max-height (and valid (eq result t)))))))))
 
 (defun scrollview--window-eligible-p (window)
   "Return non-nil if WINDOW can display scrollview."
   (and (window-live-p window)
        (not (window-minibuffer-p window))
-       (or (not scrollview-current-window-only)
-           (eq window (selected-window)))
-       (scrollview--display-area-available-p window)
-       (not (scrollview--multiline-display-replacement-p window))
-       (not (scrollview--tall-image-display-p window))
        (with-current-buffer (window-buffer window)
          (and scrollview-mode
+              (or (not scrollview-current-window-only)
+                  (eq window (selected-window)))
               (not (minibufferp))
-              (not (scrollview--excluded-mode-p))))))
+              (not (scrollview--excluded-mode-p))
+              (scrollview--display-area-available-p window)
+              (not (scrollview--multiline-display-replacement-p window))
+              (not (scrollview--tall-image-display-p window))))))
 
 (defun scrollview--cleanup-dead-windows ()
   "Delete overlay state for dead windows."
@@ -449,19 +565,31 @@ unsupported display layout."
   (remhash window scrollview--window-overlay-pools)
   (remhash window scrollview--window-render-state)
   (remhash window scrollview--window-sign-row-cache)
-  (scrollview--restore-window-margins window))
+  (scrollview--restore-window-margins window)
+  ;; An enabled window can temporarily have no overlays (short buffers or
+  ;; unsupported image layouts).  Keep tracking it for subsequent updates.
+  (scrollview--remember-window window))
 
 (defun scrollview--delete-buffer-overlays (&optional buffer)
-  "Delete scrollview overlays for windows showing BUFFER."
+  "Delete state owned by BUFFER, including windows that changed buffers."
   (let ((buffer (or buffer (current-buffer)))
         windows)
-    (maphash (lambda (window _overlays)
-               (when (or (not (window-live-p window))
-                         (eq (window-buffer window) buffer))
-                 (push window windows)))
-             scrollview--window-overlays)
+    (dolist (table (list scrollview--window-overlays scrollview--window-overlay-pools
+                         scrollview--window-margins scrollview--window-render-state
+                         scrollview--managed-windows))
+      (maphash (lambda (window _)
+                 (let ((state (gethash window scrollview--window-render-state)))
+                   (when (or (not (window-live-p window))
+                             (eq (window-buffer window) buffer)
+                             (and state (eq (scrollview--window-state-buffer state) buffer)))
+                     (cl-pushnew window windows :test #'eq))))
+               table))
     (dolist (window windows)
-      (scrollview--delete-window-overlays window))
+      (scrollview--delete-window-overlays window)
+      (remhash window scrollview--window-sign-cache)
+      (when (and (window-live-p window)
+                 (not (eq (window-buffer window) buffer)))
+        (scrollview--schedule-refresh window)))
     (scrollview--invalidate-buffer-sign-cache buffer)))
 
 (defun scrollview--invalidate-sign-cache ()
@@ -1097,6 +1225,7 @@ With WINDOW non-nil, only forget that one window."
   "Refresh scrollview overlays for WINDOW.
 Sign items come from the token-keyed cache, which self-invalidates when
 the buffer changes."
+  (scrollview--remember-window window)
   (if (scrollview--window-eligible-p window)
       (let* ((info (scrollview--position-info window))
              (sign-items (scrollview--collect-sign-items-cached window)))
@@ -1113,6 +1242,18 @@ the buffer changes."
         (scrollview--record-render-state window))
     (scrollview--delete-window-overlays window)))
 
+(defun scrollview--refresh-windows (windows)
+  "Refresh WINDOWS with one shared preparation pass."
+  (unless scrollview--refreshing
+    (let ((scrollview--refreshing t)
+          (inhibit-redisplay t))
+      (scrollview--sync-faces)
+      (scrollview--initialize-builtins)
+      (scrollview--cleanup-dead-windows)
+      (dolist (window windows)
+        (when (window-live-p window)
+          (scrollview--refresh-window window))))))
+
 (defun scrollview--refresh-now (&optional window scroll)
   "Refresh scrollview overlays now.
 When WINDOW is non-nil, refresh only that window.  When SCROLL is non-nil
@@ -1120,23 +1261,14 @@ this is a scroll-driven refresh, which skips the global setup work
 \(face sync, builtin registration, dead-window cleanup) that does not
 depend on scroll position and short-circuits when WINDOW's render
 signature is unchanged from the previous refresh."
-  (unless scrollview--refreshing
-    (let ((scrollview--refreshing t)
-          (inhibit-redisplay t))
-      (cond
-       ((and scroll window)
-        (unless (scrollview--same-render-state-p window)
-          (scrollview--refresh-window window)))
-       (t
-        (scrollview--sync-faces)
-        (scrollview--initialize-builtins)
-        (scrollview--cleanup-dead-windows)
-        (if window
-            (scrollview--refresh-window window)
-          (dolist (window (scrollview--all-windows))
-            (if (scrollview--window-eligible-p window)
-                (scrollview--refresh-window window)
-              (scrollview--delete-window-overlays window)))))))))
+  (if (and scroll window)
+      (unless scrollview--refreshing
+        (let ((scrollview--refreshing t)
+              (inhibit-redisplay t))
+          (unless (scrollview--same-render-state-p window)
+            (scrollview--refresh-window window))))
+    (scrollview--refresh-windows
+     (if window (list window) (scrollview--relevant-windows)))))
 
 ;;;###autoload
 (defun scrollview-refresh (&optional window)
@@ -1144,6 +1276,11 @@ signature is unchanged from the previous refresh."
 When WINDOW is non-nil, refresh only that window.  Interactively, refresh all
 eligible windows."
   (interactive)
+  ;; An explicit full refresh also discovers windows created before their
+  ;; configuration event has been delivered.  Background flushes use the
+  ;; registry directly and do not take this discovery path.
+  (unless window
+    (dolist (frame (frame-list)) (scrollview--discover-frame frame)))
   (scrollview--refresh-now window))
 
 
@@ -1151,25 +1288,39 @@ eligible windows."
 
 (defun scrollview--flush-refresh ()
   "Run a pending debounced refresh."
-  (setq scrollview--refresh-timer nil)
-  (if scrollview--pending-all
-      (scrollview-refresh)
-    (maphash (lambda (window _)
-               (when (window-live-p window)
-                 (scrollview-refresh window)))
-             scrollview--pending-windows))
-  (setq scrollview--pending-all nil)
-  (clrhash scrollview--pending-windows))
+  (let ((all scrollview--pending-all)
+        (windows (hash-table-keys scrollview--pending-windows)))
+    (when (timerp scrollview--refresh-timer) (cancel-timer scrollview--refresh-timer))
+    ;; A refresh can schedule more work.  Do not erase those new requests.
+    (setq scrollview--refresh-timer nil scrollview--pending-all nil)
+    (clrhash scrollview--pending-windows)
+    (if all
+        (scrollview--refresh-now)
+      (scrollview--refresh-windows
+       (cl-remove-if-not #'scrollview--window-relevant-p windows)))))
 
 (defun scrollview--schedule-refresh (&optional window)
   "Schedule a refresh for WINDOW, or all windows when WINDOW is nil."
   (if window
-      (puthash window t scrollview--pending-windows)
-    (setq scrollview--pending-all t))
-  (unless (timerp scrollview--refresh-timer)
+      (when (scrollview--window-relevant-p window)
+        (scrollview--remember-window window)
+        (puthash window t scrollview--pending-windows))
+    (when (scrollview--relevant-windows)
+      (setq scrollview--pending-all t)))
+  (when (and (or scrollview--pending-all
+                 (> (hash-table-count scrollview--pending-windows) 0))
+             (not (timerp scrollview--refresh-timer)))
     (setq scrollview--refresh-timer
           (run-with-idle-timer scrollview-refresh-delay nil
                                #'scrollview--flush-refresh))))
+
+(defun scrollview--schedule-frame-refresh (frame)
+  "Queue only relevant windows on the live FRAME."
+  (when (frame-live-p frame)
+    (scrollview--discover-frame frame)
+    (scrollview--cleanup-dead-windows)
+    (dolist (window (scrollview--relevant-windows frame))
+      (scrollview--schedule-refresh window))))
 
 (defun scrollview--schedule-buffer-refresh (&optional buffer)
   "Schedule a refresh for windows showing BUFFER."
@@ -1215,33 +1366,139 @@ relevant has changed since the last refresh."
 
 (defun scrollview--window-configuration-change ()
   "Refresh after window configuration changes."
-  (scrollview--schedule-refresh))
+  (scrollview--schedule-frame-refresh (selected-frame)))
 
-(defun scrollview--window-size-change (_frame)
+(defun scrollview--window-size-change (frame)
   "Refresh after window size changes."
-  (scrollview--schedule-refresh))
+  (scrollview--schedule-frame-refresh frame))
 
-(defun scrollview--post-command ()
-  "Refresh when the selected window changes."
+(defun scrollview--selection-sensitive-p (window)
+  "Return non-nil if WINDOW's display depends on window selection."
+  (and (window-live-p window)
+       (buffer-local-value 'scrollview-current-window-only (window-buffer window))))
+
+(defun scrollview--focus-change ()
+  "Update selection-dependent displays, including changes between frames."
   (let ((window (selected-window)))
     (unless (eq window scrollview--last-selected-window)
       (let ((old scrollview--last-selected-window))
         (setq scrollview--last-selected-window window)
-        (scrollview--invalidate-sign-cache)
-        (when (window-live-p old)
+        ;; A highlight may have been removed before the selection event.
+        ;; Check that data directly; do not invalidate unrelated sign caches.
+        (dolist (buffer (delete-dups
+                        (delq nil (list (and (window-live-p old) (window-buffer old))
+                                        (window-buffer window)))))
+          (with-current-buffer buffer
+            (scrollview--after-eglot-post-command)))
+        (when (scrollview--selection-sensitive-p old)
           (scrollview--schedule-refresh old))
-        (scrollview--schedule-refresh window)))))
+        (when (scrollview--selection-sensitive-p window)
+          (scrollview--schedule-refresh window))))))
+
+(defun scrollview--selection-change (frame)
+  "Handle selection changes on the selected FRAME."
+  (when (eq frame (selected-frame))
+    (scrollview--focus-change)))
+
+(defun scrollview--eglot-highlight-buffers ()
+  "Return buffers owning live Eglot highlight overlays."
+  (let (buffers)
+    (when (and (boundp 'eglot--highlights) (listp eglot--highlights))
+      (dolist (overlay eglot--highlights)
+        (when-let* ((buffer (and (overlayp overlay) (overlay-buffer overlay))))
+          (cl-pushnew buffer buffers :test #'eq))))
+    buffers))
+
+(defun scrollview--eglot-request (original server method params &rest args)
+  "Observe completed highlight replies, notifying old and new owner buffers."
+  (let ((callback (plist-get args :success-fn)))
+    (if (not (and (eq method :textDocument/documentHighlight) callback
+                  (> (hash-table-count scrollview--enabled-buffers) 0)))
+        (apply original server method params args)
+      (apply original server method params
+             (plist-put
+              (copy-sequence args) :success-fn
+              (lambda (&rest reply)
+                ;; A pending response may outlive a package unload.
+                (if (not (fboundp 'scrollview--eglot-highlight-buffers))
+                    (apply callback reply)
+                  (let ((buffers (scrollview--eglot-highlight-buffers)))
+                    (prog1 (apply callback reply)
+                      (dolist (buffer (delete-dups
+                                       (append buffers (scrollview--eglot-highlight-buffers))))
+                        (when (and (buffer-live-p buffer)
+                                   (gethash buffer scrollview--enabled-buffers))
+                          (with-current-buffer buffer
+                            (scrollview--after-eglot-post-command)))))))))))))
+
+(defun scrollview--maybe-integrate-eglot (&optional _file)
+  "Install reply notifications if this Eglot version exposes its request API."
+  (when (and scrollview--global-hooks-installed (fboundp 'eglot--async-request)
+             (not (advice-member-p #'scrollview--eglot-request 'eglot--async-request)))
+    (advice-add 'eglot--async-request :around #'scrollview--eglot-request)))
 
 (defun scrollview--install-global-hooks ()
   "Install global hooks used by scrollview."
   (unless scrollview--global-hooks-installed
     (setq scrollview--global-hooks-installed t)
     (setq scrollview--last-selected-window (selected-window))
+    (remove-hook 'post-command-hook 'scrollview--post-command)
     (add-hook 'window-configuration-change-hook
               #'scrollview--window-configuration-change)
     (add-hook 'window-size-change-functions
               #'scrollview--window-size-change)
-    (add-hook 'post-command-hook #'scrollview--post-command)))
+    (add-hook 'window-selection-change-functions #'scrollview--selection-change)
+    (add-function :after after-focus-change-function #'scrollview--focus-change)
+    (add-hook 'after-load-functions #'scrollview--maybe-integrate-eglot)
+    (scrollview--maybe-integrate-eglot)
+    (add-hook 'clone-indirect-buffer-hook #'scrollview--register-clone)))
+
+(defun scrollview--register-buffer ()
+  "Register the current buffer and acquire shared event hooks."
+  (puthash (current-buffer) t scrollview--enabled-buffers)
+  (dolist (window (get-buffer-window-list (current-buffer) nil t))
+    (scrollview--remember-window window))
+  (add-hook 'kill-buffer-hook #'scrollview--release-buffer nil t)
+  (add-hook 'change-major-mode-hook #'scrollview--release-buffer nil t)
+  (scrollview--install-global-hooks))
+
+(defun scrollview--register-clone ()
+  "Register an indirect buffer that inherited an enabled local mode."
+  (when scrollview-mode (scrollview--register-buffer)))
+
+(defun scrollview--release-buffer ()
+  "Release resources when disabling, killing or changing the buffer's mode."
+  (remhash (current-buffer) scrollview--enabled-buffers)
+  (scrollview--delete-buffer-overlays)
+  (dolist (window (hash-table-keys scrollview--pending-windows))
+    (when (or (not (window-live-p window))
+              (eq (window-buffer window) (current-buffer)))
+      (remhash window scrollview--pending-windows)
+      (scrollview--delete-window-overlays window)))
+  (scrollview--maybe-uninstall-global-hooks))
+
+(defun scrollview--maybe-uninstall-global-hooks ()
+  "Release shared hooks and queued work after the last registered buffer."
+  (when (zerop (hash-table-count scrollview--enabled-buffers))
+    (remove-hook 'window-configuration-change-hook #'scrollview--window-configuration-change)
+    (remove-hook 'window-size-change-functions #'scrollview--window-size-change)
+    (remove-hook 'window-selection-change-functions #'scrollview--selection-change)
+    (remove-hook 'post-command-hook 'scrollview--post-command)
+    (remove-function after-focus-change-function #'scrollview--focus-change)
+    (remove-hook 'after-load-functions #'scrollview--maybe-integrate-eglot)
+    (when (fboundp 'eglot--async-request)
+      (advice-remove 'eglot--async-request #'scrollview--eglot-request))
+    (remove-hook 'clone-indirect-buffer-hook #'scrollview--register-clone)
+    (when (timerp scrollview--refresh-timer) (cancel-timer scrollview--refresh-timer))
+    (maphash (lambda (_window timer) (when (timerp timer) (cancel-timer timer)))
+             scrollview--scroll-refresh-timers)
+    (clrhash scrollview--scroll-refresh-timers)
+    (dolist (window (scrollview--relevant-windows))
+      (scrollview--delete-window-overlays window))
+    (clrhash scrollview--pending-windows)
+    (clrhash scrollview--managed-windows)
+    (setq scrollview--refresh-timer nil scrollview--pending-all nil
+          scrollview--global-hooks-installed nil scrollview--last-selected-window nil)))
 
 
 ;;; Mouse navigation

@@ -354,9 +354,9 @@ literally with `search-forward'."
     (seq-filter #'overlayp eglot--highlights)))
 
 (defun scrollview--eglot-highlight-token-value (overlays)
-  "Return a cache token for Eglot highlight OVERLAYS."
+  "Return a cache token for current-buffer Eglot highlight OVERLAYS."
   (cl-loop for overlay in overlays
-           when (overlayp overlay)
+           when (and (overlayp overlay) (eq (overlay-buffer overlay) (current-buffer)))
            collect (list (overlay-start overlay)
                          (overlay-end overlay)
                          (overlay-get overlay 'face))))
@@ -370,7 +370,7 @@ snapshot, so an unchanged command allocates no per-overlay cons cells."
           (saved token))
       (while current
         (let ((overlay (pop current)))
-          (when (overlayp overlay)
+          (when (and (overlayp overlay) (eq (overlay-buffer overlay) (current-buffer)))
             (unless saved
               (throw 'different nil))
             (let ((entry (pop saved)))
