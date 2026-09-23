@@ -1772,6 +1772,77 @@ When STRING is non-nil, include it as the clicked string object."
     (should (equal called (list window 'scroll)))
     (should-not (gethash window scrollview--scroll-refresh-timers))))
 
+(ert-deftest scrollview-throttled-scroll-keeps-indicators-on-screen-rows ()
+  (scrollview-test--reset-state)
+  (scrollview-test--with-displayed-buffer
+    (scrollview-test--insert-lines 1000)
+    (goto-char (point-min))
+    (forward-line 200)
+    (let ((window (selected-window))
+          (scrollview-area 'margin)
+          (scrollview-signs-on-startup nil)
+          (scrollview-update-interval 60))
+      (set-window-start window (point) t)
+      (scrollview-register-sign-group 'scrollview-test-stable t)
+      (scrollview-register-sign-spec
+       :group 'scrollview-test-stable :priority 50
+       :bitmap 'scrollview-search-bitmap :face 'scrollview-search-face
+       :collector (lambda (_) '(500)))
+      (scrollview-mode 1)
+      (scrollview-refresh window)
+      (let ((overlays (copy-sequence
+                       (gethash window scrollview--window-overlays)))
+            (start (window-start window)))
+        ;; Check the intermediate display before the timer runs, in both
+        ;; directions and after a reversal back to the last rendered start.
+        (cl-letf (((symbol-function 'scrollview--build-slots)
+                   (lambda (&rest _) (ert-fail "rebuilt throttled slots")))
+                  ((symbol-function 'scrollview--collect-sign-items-cached)
+                   (lambda (&rest _) (ert-fail "collected throttled signs"))))
+          (dolist (delta '(3 -2 60 -61))
+            (goto-char (window-start window))
+            (forward-line delta)
+            (set-window-start window (point) t)
+            (scrollview--after-window-scroll window (point))
+            (should (timerp (gethash window scrollview--scroll-refresh-timers)))
+            (should (= (length overlays)
+                       (length (gethash window scrollview--window-overlays))))
+            (dolist (overlay overlays)
+              (should (memq overlay (gethash window scrollview--window-overlays)))
+              (should (= (overlay-get overlay 'scrollview-row)
+                         (- (line-number-at-pos (overlay-start overlay))
+                            (line-number-at-pos (window-start window))))))))
+        (should (= start (window-start window)))
+        ;; The trailing refresh still renders the latest thumb position.
+        (goto-char start)
+        (forward-line 100)
+        (set-window-start window (point) t)
+        (scrollview--after-window-scroll window (point))
+        (should-not (scrollview--same-render-state-p window))
+        (cancel-timer (gethash window scrollview--scroll-refresh-timers))
+        (scrollview--flush-scroll-refresh window)
+        (should (scrollview--same-render-state-p window))
+        (should (= (apply #'min
+                         (mapcar (lambda (overlay)
+                                   (overlay-get overlay 'scrollview-row))
+                                 (gethash window scrollview--window-overlays)))
+                   (plist-get (scrollview--position-info window) :thumb-top)))))))
+
+(ert-deftest scrollview-throttled-scroll-renders-without-cached-slots ()
+  (scrollview-test--reset-state)
+  (scrollview-test--with-displayed-buffer
+    (scrollview-test--insert-lines 200)
+    (goto-char (point-min))
+    (let ((window (selected-window))
+          (scrollview-area 'margin)
+          (scrollview-signs-on-startup nil)
+          (scrollview-update-interval 60))
+      (set-window-start window (point-min) t)
+      (scrollview-mode 1)
+      (scrollview--after-window-scroll window (point-min))
+      (should (gethash window scrollview--window-overlays))
+      (should (scrollview--same-render-state-p window)))))
+
 (ert-deftest scrollview-scroll-state-avoids-window-end-and-tracks-pixel-scroll ()
   (scrollview-test--reset-state)
   (scrollview-test--with-displayed-buffer

@@ -95,9 +95,10 @@ value `jinx' collects misspellings highlighted by Jinx."
   :group 'scrollview)
 
 (defcustom scrollview-update-interval 0
-  "Minimum interval between scroll-driven updates, in seconds.
-Zero keeps synchronous scrolling semantics.  A positive value coalesces rapid
-scroll events per window and renders the most recent state when its timer runs."
+  "Minimum interval between scroll-driven content updates, in seconds.
+Zero updates the thumb and signs synchronously.  A positive value coalesces
+these updates per window, while immediately repositioning existing indicators
+on their screen rows so they do not move with the buffer text."
   :type 'number
   :group 'scrollview)
 

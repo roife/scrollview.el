@@ -42,7 +42,7 @@
                (:constructor scrollview--make-window-state))
   "Mutable render state for one window."
   buffer tick start vscroll hscroll pixel-width pixel-height line-height
-  sign-generation spell-generation diagnostic-generation)
+  sign-generation spell-generation diagnostic-generation info slots)
 
 (defun scrollview--make-window-table ()
   "Return an eq hash table whose window keys are weak."
@@ -1186,8 +1186,9 @@ avoids an exact `window-end', whose computation depends on redisplay."
            (= scrollview--diagnostic-state-generation
               (scrollview--window-state-diagnostic-generation state))))))
 
-(defun scrollview--record-render-state (window)
-  "Record WINDOW's current render inputs without allocating a signature list."
+(defun scrollview--record-render-state (window &optional info slots)
+  "Record WINDOW's current render inputs without allocating a signature list.
+Keep INFO and SLOTS so throttled scrolls can reposition the current display."
   (when (window-live-p window)
     (let* ((buffer (window-buffer window))
            (state (or (gethash window scrollview--window-render-state)
@@ -1212,7 +1213,9 @@ avoids an exact `window-end', whose computation depends on redisplay."
               (scrollview--window-state-spell-generation state)
               scrollview--spell-state-generation
               (scrollview--window-state-diagnostic-generation state)
-              scrollview--diagnostic-state-generation)))))
+              scrollview--diagnostic-state-generation
+              (scrollview--window-state-info state) info
+              (scrollview--window-state-slots state) slots)))))
 
 (defun scrollview--invalidate-render-state (&optional window)
   "Drop cached render signatures.
@@ -1228,10 +1231,11 @@ the buffer changes."
   (scrollview--remember-window window)
   (if (scrollview--window-eligible-p window)
       (let* ((info (scrollview--position-info window))
-             (sign-items (scrollview--collect-sign-items-cached window)))
-        (if (scrollview--should-render-p info sign-items)
-            (let ((slots (scrollview--build-slots window info sign-items))
-                  overlays)
+             (sign-items (scrollview--collect-sign-items-cached window))
+             (slots (and (scrollview--should-render-p info sign-items)
+                         (scrollview--build-slots window info sign-items))))
+        (if slots
+            (let (overlays)
               (scrollview--prepare-window-display-area window)
               (setq overlays
                     (scrollview--apply-overlay-targets
@@ -1239,8 +1243,31 @@ the buffer changes."
                      (scrollview--plan-overlay-targets window slots info)))
               (puthash window overlays scrollview--window-overlays))
           (scrollview--delete-window-overlays window))
-        (scrollview--record-render-state window))
+        (scrollview--record-render-state window info slots))
     (scrollview--delete-window-overlays window)))
+
+(defun scrollview--reanchor-window-overlays (window)
+  "Reposition WINDOW's cached display before redisplay, returning non-nil.
+Leave the render signature unchanged so a pending throttled refresh still
+updates the thumb and signs using the latest scroll position."
+  (when-let* ((state (gethash window scrollview--window-render-state))
+              (slots (scrollview--window-state-slots state))
+              (info (scrollview--window-state-info state)))
+    (when (and (scrollview--window-eligible-p window)
+               (eq (window-buffer window) (scrollview--window-state-buffer state))
+               (= (window-body-width window t)
+                  (scrollview--window-state-pixel-width state))
+               (= (window-body-height window t)
+                  (scrollview--window-state-pixel-height state))
+               (= (scrollview--window-line-height window)
+                  (scrollview--window-state-line-height state)))
+      (let ((scrollview--refreshing t)
+            (inhibit-redisplay t))
+        (puthash window
+                 (scrollview--apply-overlay-targets
+                  window (scrollview--plan-overlay-targets window slots info))
+                 scrollview--window-overlays))
+      t)))
 
 (defun scrollview--refresh-windows (windows)
   "Refresh WINDOWS with one shared preparation pass."
@@ -1343,9 +1370,9 @@ eligible windows."
 
 (defun scrollview--after-window-scroll (window _start)
   "Refresh WINDOW immediately after it scrolls.
-Keeping this synchronous prevents stale scrollview overlays from riding along
-with the text for one redisplay frame before the debounced refresh corrects
-them.
+Always reposition indicators synchronously so they cannot ride along with
+the text before a throttled refresh corrects them.  When throttling, reuse
+the last rendered slots until the timer updates the thumb and signs.
 
 Performance: `window-scroll-functions' fires on every redisplay step during
 scrolling, so this delegates to `scrollview--refresh-now' with SCROLL
@@ -1355,7 +1382,10 @@ relevant has changed since the last refresh."
               (scrollview--multiline-display-replacement-p window)
               (scrollview--tall-image-display-p window))
     (if (> scrollview-update-interval 0)
-        (scrollview--schedule-scroll-refresh window)
+        (progn
+          (unless (scrollview--reanchor-window-overlays window)
+            (scrollview--refresh-now window 'scroll))
+          (scrollview--schedule-scroll-refresh window))
       (scrollview--refresh-now window 'scroll))))
 
 (defun scrollview--after-change (start end _old-length)
